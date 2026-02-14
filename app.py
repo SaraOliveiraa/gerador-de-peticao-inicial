@@ -76,6 +76,8 @@ SECOES_SUGERIDAS = [
     "Dos requerimentos finais",
 ]
 
+NIVEIS_DETALHAMENTO = ["Enxuto", "Padrão", "Aprofundado"]
+
 ETAPAS_FLUXO = [
     "Contexto Processual",
     "Campos da Área",
@@ -815,18 +817,19 @@ def _validar_essenciais_para_geracao() -> list[str]:
 
 
 def _calcular_progresso_preenchimento() -> float:
-    campos_referencia = [
-        "area_direito",
-        "tipo_acao",
-        "comarca_uf",
-        "autor_nome",
-        "reu_nome",
-        "fatos",
-        "pedidos_base",
-        "teses_juridicas",
-    ]
-    preenchidos = sum(1 for campo in campos_referencia if _campo_preenchido(campo))
-    return preenchidos / len(campos_referencia)
+    total_etapas = len(ETAPAS_FLUXO)
+    if total_etapas == 0:
+        return 0.0
+
+    etapa_idx_atual = _obter_etapa_idx()
+    etapas_concluidas = etapa_idx_atual
+
+    etapa_atual = ETAPAS_FLUXO[etapa_idx_atual]
+    if not _validar_etapa(etapa_atual):
+        etapas_concluidas += 1
+
+    progresso = etapas_concluidas / total_etapas
+    return max(0.0, min(progresso, 1.0))
 
 
 def _menu_fluxo_lateral() -> tuple[str, int]:
@@ -869,7 +872,7 @@ def _menu_fluxo_lateral() -> tuple[str, int]:
 
         progresso = _calcular_progresso_preenchimento()
         st.progress(progresso)
-        st.caption(f"Preenchimento-base: {int(progresso * 100)}%")
+        st.caption(f"Progresso por etapas: {int(progresso * 100)}%")
 
     return ETAPAS_FLUXO[etapa_idx_atual], etapa_idx_atual
 
@@ -884,6 +887,7 @@ def _aplicar_estilo_preto_dourado() -> None:
                     radial-gradient(900px 420px at 108% 4%, rgba(127, 98, 29, 0.25), rgba(0, 0, 0, 0) 52%),
                     linear-gradient(180deg, #171717 0%, #101010 100%);
                 color: #fbfbfb;
+                font-family: "Montserrat", "Trebuchet MS", sans-serif;
             }
 
             .main .block-container {
@@ -969,10 +973,6 @@ def _aplicar_estilo_preto_dourado() -> None:
                 font-size: 0.9rem;
                 font-weight: 600;
                 line-height: 1.2;
-            }
-
-            [data-testid="stAppViewContainer"] * {
-                font-family: "Montserrat", "Trebuchet MS", sans-serif;
             }
 
             h1, h2, h3, label, p, span {
@@ -1426,7 +1426,7 @@ with st.form("form_peticao"):
             )
             st.radio(
                 "Nível de detalhamento",
-                ["Enxuto", "Padrão", "Aprofundado"],
+                NIVEIS_DETALHAMENTO,
                 index=1,
                 horizontal=True,
                 key="nivel_detalhamento",
