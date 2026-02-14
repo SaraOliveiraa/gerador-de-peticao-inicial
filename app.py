@@ -393,10 +393,12 @@ CAMPOS_POR_AREA: dict[str, list[dict[str, Any]]] = {
 }
 
 
+ # Retorna apenas os caracteres numéricos de um texto.
 def _somente_digitos(valor: str) -> str:
     return re.sub(r"\D", "", valor or "")
 
 
+ # Formata dígitos em padrão de CPF, inclusive durante digitação parcial.
 def _formatar_cpf(digitos: str) -> str:
     if len(digitos) <= 3:
         return digitos
@@ -407,6 +409,7 @@ def _formatar_cpf(digitos: str) -> str:
     return f"{digitos[:3]}.{digitos[3:6]}.{digitos[6:9]}-{digitos[9:11]}"
 
 
+ # Formata dígitos em padrão de CNPJ, inclusive durante digitação parcial.
 def _formatar_cnpj(digitos: str) -> str:
     if len(digitos) <= 2:
         return digitos
@@ -419,6 +422,7 @@ def _formatar_cnpj(digitos: str) -> str:
     return f"{digitos[:2]}.{digitos[2:5]}.{digitos[5:8]}/{digitos[8:12]}-{digitos[12:14]}"
 
 
+ # Decide entre máscara de CPF ou CNPJ conforme a quantidade de dígitos.
 def _formatar_cpf_cnpj(valor: str) -> str:
     digitos = _somente_digitos(valor)
     if len(digitos) <= 11:
@@ -426,6 +430,7 @@ def _formatar_cpf_cnpj(valor: str) -> str:
     return _formatar_cnpj(digitos[:14])
 
 
+ # Converte uma sequência numérica para formato monetário brasileiro.
 def _formatar_moeda_br(valor: str) -> str:
     digitos = _somente_digitos(valor)
     if not digitos:
@@ -437,6 +442,7 @@ def _formatar_moeda_br(valor: str) -> str:
     return f"R$ {inteiro_formatado},{resto:02d}"
 
 
+ # Converte texto multilinha em lista, removendo marcadores e linhas vazias.
 def _linhas_para_lista(texto: str) -> list[str]:
     itens: list[str] = []
     for linha in (texto or "").splitlines():
@@ -448,6 +454,7 @@ def _linhas_para_lista(texto: str) -> list[str]:
     return itens
 
 
+ # Mescla listas de textos sem duplicar itens (comparação case-insensitive).
 def _mesclar_itens(*colecoes: list[str]) -> list[str]:
     resultado: list[str] = []
     vistos: set[str] = set()
@@ -466,20 +473,24 @@ def _mesclar_itens(*colecoes: list[str]) -> list[str]:
     return resultado
 
 
+ # Gera um identificador simples e estável para uso em chaves de estado.
 def _slug(valor: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (valor or "").lower()).strip("_")
 
 
+ # Monta a chave de session_state para um campo dinâmico de área.
 def _chave_campo_area(area: str, campo_id: str) -> str:
     return f"area_{_slug(area)}_{_slug(campo_id)}"
 
 
+ # Resolve o nome da área exibida para a chave interna usada no dicionário de campos.
 def _resolver_area_campos(area: str) -> str:
     area_normalizada = (area or "").strip()
     area_mapeada = ALIAS_AREA_CAMPOS.get(area_normalizada, area_normalizada)
     return area_mapeada if area_mapeada in CAMPOS_POR_AREA else "Outro"
 
 
+ # Clona estruturas mutáveis para evitar referência compartilhada no snapshot.
 def _clonar_valor_snapshot(valor: Any) -> Any:
     if isinstance(valor, list):
         return valor.copy()
@@ -492,6 +503,7 @@ def _clonar_valor_snapshot(valor: Any) -> Any:
     return valor
 
 
+ # Lista todas as chaves do formulário que devem participar da persistência.
 def _listar_todas_chaves_formulario() -> list[str]:
     chaves = list(CHAVES_FORMULARIO_BASE)
     for area, campos in CAMPOS_POR_AREA.items():
@@ -510,6 +522,7 @@ def _listar_todas_chaves_formulario() -> list[str]:
     return dedup
 
 
+ # Salva um snapshot dos campos do formulário no session_state.
 def _salvar_snapshot_formulario() -> None:
     snapshot = st.session_state.get("_form_snapshot", {})
     if not isinstance(snapshot, dict):
@@ -522,6 +535,7 @@ def _salvar_snapshot_formulario() -> None:
     st.session_state["_form_snapshot"] = snapshot
 
 
+ # Restaura chaves do snapshot quando elas não existem no ciclo atual de renderização.
 def _restaurar_snapshot_formulario() -> None:
     snapshot = st.session_state.get("_form_snapshot", {})
     if not isinstance(snapshot, dict):
@@ -532,6 +546,7 @@ def _restaurar_snapshot_formulario() -> None:
             st.session_state[chave] = _clonar_valor_snapshot(valor)
 
 
+ # Renderiza um campo dinâmico com base na configuração do tipo de widget.
 def _renderizar_campo_area(area: str, campo: dict[str, Any]) -> None:
     campo_id = str(campo.get("id", "")).strip()
     if not campo_id:
@@ -565,6 +580,7 @@ def _renderizar_campo_area(area: str, campo: dict[str, Any]) -> None:
     st.text_input(rotulo, key=chave, placeholder=placeholder, help=ajuda)
 
 
+ # Renderiza todos os campos específicos da área jurídica selecionada.
 def _renderizar_bloco_area(area: str) -> None:
     area_campos = _resolver_area_campos(area)
     campos = CAMPOS_POR_AREA.get(area_campos, CAMPOS_POR_AREA["Outro"])
@@ -573,6 +589,7 @@ def _renderizar_bloco_area(area: str) -> None:
         _renderizar_campo_area(area_campos, campo)
 
 
+ # Coleta apenas os campos específicos da área que foram efetivamente preenchidos.
 def _coletar_campos_area_especificos(area: str) -> dict[str, Any]:
     area_campos = _resolver_area_campos(area)
     campos = CAMPOS_POR_AREA.get(area_campos, CAMPOS_POR_AREA["Outro"])
@@ -611,12 +628,14 @@ def _coletar_campos_area_especificos(area: str) -> dict[str, Any]:
     }
 
 
+ # Remove caracteres inválidos para nome de arquivo no Windows.
 def _sanitizar_nome_arquivo(texto: str) -> str:
     nome = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "", texto or "")
     nome = re.sub(r"\s+", " ", nome).strip(" .")
     return nome
 
 
+ # Gera o nome padrão do DOCX com base no nome do autor.
 def _nome_arquivo_docx(autor_nome: str) -> str:
     nome_autor = _sanitizar_nome_arquivo(autor_nome)
     if not nome_autor:
@@ -624,20 +643,24 @@ def _nome_arquivo_docx(autor_nome: str) -> str:
     return f"Petição Inicial - {nome_autor}.docx"
 
 
+ # Aplica máscara de CPF/CNPJ em um campo de documento.
 def _aplicar_mascara_documento(campo: str) -> None:
     st.session_state[campo] = _formatar_cpf_cnpj(st.session_state.get(campo, ""))
 
 
+ # Aplica máscara de moeda brasileira em um campo monetário.
 def _aplicar_mascara_moeda(campo: str) -> None:
     st.session_state[campo] = _formatar_moeda_br(st.session_state.get(campo, ""))
 
 
+ # Aplica todas as máscaras necessárias antes da geração da peça.
 def _aplicar_mascaras_formulario() -> None:
     _aplicar_mascara_documento("autor_doc")
     _aplicar_mascara_documento("reu_doc")
     _aplicar_mascara_moeda("valor_causa")
 
 
+ # Consolida os dados do formulário no payload usado pelo prompt.
 def _coletar_payload() -> dict[str, Any]:
     area_direito = st.session_state.get("area_direito", "Outro")
     campos_area_especificos = _coletar_campos_area_especificos(area_direito)
@@ -723,6 +746,7 @@ def _coletar_payload() -> dict[str, Any]:
     return dados
 
 
+ # Verifica se um campo possui conteúdo válido, respeitando o tipo do valor.
 def _campo_preenchido(chave: str) -> bool:
     valor = st.session_state.get(chave)
     if isinstance(valor, str):
@@ -734,10 +758,12 @@ def _campo_preenchido(chave: str) -> bool:
     return valor is not None
 
 
+ # Retorna as linhas com conteúdo de um campo textual multilinha.
 def _linhas_com_texto(chave: str) -> list[str]:
     return _linhas_para_lista(st.session_state.get(chave, ""))
 
 
+ # Obtém o índice da etapa atual com proteção de limites.
 def _obter_etapa_idx() -> int:
     if "etapa_idx" not in st.session_state:
         st.session_state.etapa_idx = 0
@@ -745,10 +771,12 @@ def _obter_etapa_idx() -> int:
     return max(0, min(idx, len(ETAPAS_FLUXO) - 1))
 
 
+ # Define o índice da etapa atual com proteção de limites.
 def _definir_etapa_idx(idx: int) -> None:
     st.session_state.etapa_idx = max(0, min(int(idx), len(ETAPAS_FLUXO) - 1))
 
 
+ # Mapeia os campos obrigatórios de cada etapa do fluxo.
 def _campos_obrigatorios_da_etapa(etapa: str) -> list[tuple[str, str]]:
     obrigatorios: dict[str, list[tuple[str, str]]] = {
         "Contexto Processual": [
@@ -776,6 +804,7 @@ def _campos_obrigatorios_da_etapa(etapa: str) -> list[tuple[str, str]]:
     return obrigatorios.get(etapa, [])
 
 
+ # Valida se os obrigatórios da etapa atual foram preenchidos.
 def _validar_etapa(etapa: str) -> list[str]:
     faltantes: list[str] = []
 
@@ -792,6 +821,7 @@ def _validar_etapa(etapa: str) -> list[str]:
     return faltantes
 
 
+ # Valida os campos essenciais de todas as etapas antes de gerar a petição.
 def _validar_essenciais_para_geracao() -> list[str]:
     etapas_relevantes = [
         "Contexto Processual",
@@ -816,6 +846,7 @@ def _validar_essenciais_para_geracao() -> list[str]:
     return dedup
 
 
+ # Calcula o progresso considerando etapas concluídas e etapa atual válida.
 def _calcular_progresso_preenchimento() -> float:
     total_etapas = len(ETAPAS_FLUXO)
     if total_etapas == 0:
@@ -832,6 +863,7 @@ def _calcular_progresso_preenchimento() -> float:
     return max(0.0, min(progresso, 1.0))
 
 
+ # Renderiza o painel lateral de acompanhamento visual do fluxo.
 def _menu_fluxo_lateral() -> tuple[str, int]:
     with st.sidebar:
         st.markdown("### Painel do Caso")
@@ -877,6 +909,7 @@ def _menu_fluxo_lateral() -> tuple[str, int]:
     return ETAPAS_FLUXO[etapa_idx_atual], etapa_idx_atual
 
 
+ # Injeta o tema visual escuro-dourado da aplicação.
 def _aplicar_estilo_preto_dourado() -> None:
     st.markdown(
         """
@@ -1194,6 +1227,7 @@ def _aplicar_estilo_preto_dourado() -> None:
     )
 
 
+ # Renderiza o cabeçalho principal com informações de área, modelo e status da API.
 def _render_cabecalho_moderno(area: str, modelo: str, api_configurada: bool) -> None:
     area_esc = html.escape(area or "Outro")
     modelo_esc = html.escape(modelo or "[PREENCHER]")
@@ -1218,6 +1252,7 @@ def _render_cabecalho_moderno(area: str, modelo: str, api_configurada: bool) -> 
     )
 
 
+ # Renderiza um título de seção com índice visual e linha decorativa.
 def _titulo_secao(texto: str) -> None:
     texto_limpo = (texto or "").strip()
     match = re.match(r"^(\d+)\)\s*(.*)$", texto_limpo)

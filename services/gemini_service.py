@@ -7,10 +7,12 @@ from google import genai
 DEFAULT_MODEL = "gemini-2.5-flash"
 
 
+# Define um tipo de erro específico para falhas de integração com o Gemini.
 class GeminiServiceError(RuntimeError):
     """Raised when Gemini generation fails."""
 
 
+# Envia o prompt ao Gemini e retorna o texto gerado, com tratamento de erros de cota e autenticação.
 def gerar_peticao(prompt: str, model: str = DEFAULT_MODEL, api_key: str | None = None) -> str:
     """
     Gera texto usando Gemini.
@@ -48,6 +50,7 @@ def gerar_peticao(prompt: str, model: str = DEFAULT_MODEL, api_key: str | None =
 
 
 # Backward-compatible alias used by earlier app versions.
+# Mantém compatibilidade com chamadas antigas que usam o nome em inglês.
 def generate_petition(prompt: str, api_key: str | None = None, model: str | None = None) -> str:
     chosen_model = (model or DEFAULT_MODEL).strip()
     return gerar_peticao(prompt=prompt, model=chosen_model, api_key=api_key)

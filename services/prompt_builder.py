@@ -176,6 +176,7 @@ FOCO DA AREA: GENERICO
 }
 
 
+ # Normaliza texto para comparação tolerante (sem acentos, minúsculo e espaços ajustados).
 def _normalizar_texto(valor: Any) -> str:
     texto = str(valor or "").strip()
     if not texto:
@@ -185,6 +186,7 @@ def _normalizar_texto(valor: Any) -> str:
     return re.sub(r"\s+", " ", texto).strip().lower()
 
 
+ # Navega por um caminho de chaves em dicionário e retorna valor padrão quando não existir.
 def _valor_caminho(dados: dict[str, Any], *caminho: str, default: Any = "") -> Any:
     atual: Any = dados
     for chave in caminho:
@@ -196,6 +198,7 @@ def _valor_caminho(dados: dict[str, Any], *caminho: str, default: Any = "") -> A
     return atual
 
 
+ # Retorna o primeiro texto não vazio dentre múltiplos candidatos.
 def _primeiro_texto(*valores: Any) -> str:
     for valor in valores:
         texto = str(valor or "").strip()
@@ -204,6 +207,7 @@ def _primeiro_texto(*valores: Any) -> str:
     return ""
 
 
+ # Converte diferentes formatos de entrada em lista limpa e sem duplicidade.
 def _coletar_lista(valor: Any) -> list[str]:
     if valor is None:
         return []
@@ -236,6 +240,7 @@ def _coletar_lista(valor: Any) -> list[str]:
     return itens
 
 
+ # Identifica o tipo de ação a partir dos campos possíveis do payload.
 def _coletar_tipo_acao(dados: dict[str, Any]) -> str:
     return _primeiro_texto(
         _valor_caminho(dados, "tipo_acao", default=""),
@@ -246,6 +251,7 @@ def _coletar_tipo_acao(dados: dict[str, Any]) -> str:
     )
 
 
+ # Normaliza o tipo de ação para um rótulo conhecido pelo guia de prompts.
 def _normalize_tipo_acao(tipo: str | None) -> str:
     if not tipo:
         return "Outro"
@@ -287,6 +293,7 @@ def _normalize_tipo_acao(tipo: str | None) -> str:
     return "Outro"
 
 
+ # Extrai a área do direito considerando diferentes posições no payload.
 def _coletar_area_direito(dados: dict[str, Any]) -> str:
     return _primeiro_texto(
         _valor_caminho(dados, "contexto_processual", "area_direito", default=""),
@@ -295,6 +302,7 @@ def _coletar_area_direito(dados: dict[str, Any]) -> str:
     )
 
 
+ # Normaliza a área do direito para os rótulos suportados internamente.
 def _normalize_area_direito(area: str | None) -> str:
     if not area:
         return "Outro"
@@ -325,6 +333,7 @@ def _normalize_area_direito(area: str | None) -> str:
     return "Outro"
 
 
+ # Define um tipo de ação padrão quando ele não vem explícito, com base na área.
 def _inferir_tipo_acao_por_area(area_norm: str) -> str:
     mapa = {
         "Trabalhista": "Trabalhista - verbas rescisorias",
@@ -333,6 +342,7 @@ def _inferir_tipo_acao_por_area(area_norm: str) -> str:
     return mapa.get(area_norm, "Outro")
 
 
+ # Converte valores variados para booleano de forma previsível.
 def _to_bool(valor: Any) -> bool:
     if isinstance(valor, bool):
         return valor
@@ -343,12 +353,14 @@ def _to_bool(valor: Any) -> bool:
     return False
 
 
+ # Formata listas em string única para leitura no bloco de personalização.
 def _formatar_lista(itens: list[str], fallback: str) -> str:
     if not itens:
         return fallback
     return " | ".join(itens)
 
 
+ # Resume os campos específicos da área em pares "rótulo: valor".
 def _resumir_campos_area(campos_area: Any) -> tuple[str, str]:
     if not isinstance(campos_area, dict):
         return "", "nenhum informado"
@@ -378,6 +390,7 @@ def _resumir_campos_area(campos_area: Any) -> tuple[str, str]:
     return area, _formatar_lista(pares, "nenhum informado")
 
 
+ # Monta o bloco textual de personalização do caso para orientar a IA.
 def _montar_bloco_personalizacao(dados: dict[str, Any], tipo_raw: str, tipo_norm: str) -> str:
     area = _primeiro_texto(
         _valor_caminho(dados, "contexto_processual", "area_direito", default=""),
@@ -464,6 +477,7 @@ def _montar_bloco_personalizacao(dados: dict[str, Any], tipo_raw: str, tipo_norm
     return "\n".join(linhas)
 
 
+ # Constrói o prompt final, combinando regras base, guias e dados do caso.
 def montar_prompt(dados: dict[str, Any]) -> str:
     dados = dados if isinstance(dados, dict) else {}
 
@@ -512,9 +526,11 @@ CHECKLIST FINAL (auto-validacao antes de responder):
 
 
 # Backward-compatible aliases for earlier app versions.
+ # Mantém compatibilidade com versões antigas que montam payload via kwargs.
 def build_case_payload(**kwargs: Any) -> dict[str, Any]:
     return dict(kwargs)
 
 
+ # Mantém compatibilidade com versões antigas que chamam build_prompt.
 def build_prompt(case_payload: dict[str, Any]) -> str:
     return montar_prompt(case_payload)
