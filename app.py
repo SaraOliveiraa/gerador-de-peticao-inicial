@@ -1016,6 +1016,7 @@ def _aplicar_estilo_preto_dourado() -> None:
                 color: #d0d0d0 !important;
             }
 
+            .main div[data-testid="stVerticalBlockBorderWrapper"],
             div[data-testid="stForm"] {
                 background: linear-gradient(180deg, rgba(35, 35, 35, 0.96), rgba(20, 20, 20, 0.96));
                 border: 1px solid rgba(216, 171, 73, 0.42);
@@ -1167,6 +1168,7 @@ def _aplicar_estilo_preto_dourado() -> None:
                 color: #f5dc9c;
             }
 
+            div[data-testid="stButton"] > button,
             div[data-testid="stFormSubmitButton"] > button,
             div[data-testid="stDownloadButton"] > button {
                 background: linear-gradient(135deg, #d0a64b, #f6dea6);
@@ -1179,6 +1181,7 @@ def _aplicar_estilo_preto_dourado() -> None:
                 transition: transform .18s ease, filter .18s ease, box-shadow .18s ease;
             }
 
+            div[data-testid="stButton"] > button:hover,
             div[data-testid="stFormSubmitButton"] > button:hover,
             div[data-testid="stDownloadButton"] > button:hover {
                 filter: brightness(1.03);
@@ -1216,6 +1219,7 @@ def _aplicar_estilo_preto_dourado() -> None:
                     font-size: 0.87rem;
                 }
 
+                .main div[data-testid="stVerticalBlockBorderWrapper"],
                 div[data-testid="stForm"] {
                     padding: 0.95rem;
                     border-radius: 16px;
@@ -1288,7 +1292,7 @@ voltar_etapa = False
 avancar_etapa = False
 gerar = False
 
-with st.form("form_peticao"):
+with st.container(border=True):
     st.caption(f"Etapa atual: {etapa_atual}")
     campos_obrigatorios_etapa = _campos_obrigatorios_da_etapa(etapa_atual)
     if campos_obrigatorios_etapa:
@@ -1303,13 +1307,13 @@ with st.form("form_peticao"):
         ctx1, ctx2 = st.columns(2)
 
         with ctx1:
-            st.text_input("Tipo da ação", key="tipo_acao", placeholder="Ex.: Revisional de contrato")
+            st.text_input("Tipo da ação *", key="tipo_acao", placeholder="Ex.: Revisional de contrato")
         with ctx2:
             st.selectbox("Rito/Procedimento", RITOS_PROCESSUAIS, key="rito")
 
         ctx3, ctx4 = st.columns(2)
         with ctx3:
-            st.text_input("Comarca / UF", key="comarca_uf", placeholder="Ex.: São Paulo/SP")
+            st.text_input("Comarca / UF *", key="comarca_uf", placeholder="Ex.: São Paulo/SP")
         with ctx4:
             st.text_input("Foro / Vara (opcional)", key="foro_vara", placeholder="Ex.: 2ª Vara Cível")
 
@@ -1323,14 +1327,16 @@ with st.form("form_peticao"):
 
         with col1:
             st.subheader("Autor")
-            st.text_input("Nome", key="autor_nome", placeholder="Ex.: Maria da Silva")
+            st.text_input("Nome *", key="autor_nome", placeholder="Ex.: Maria da Silva")
             st.text_input(
-                "CPF/CNPJ",
+                "CPF/CNPJ *",
                 key="autor_doc",
                 placeholder="000.000.000-00 ou 00.000.000/0000-00",
+                on_change=_aplicar_mascara_documento,
+                args=("autor_doc",),
             )
             st.text_input(
-                "Endereço",
+                "Endereço *",
                 key="autor_end",
                 placeholder="Rua, número, bairro, cidade/UF",
             )
@@ -1343,14 +1349,16 @@ with st.form("form_peticao"):
 
         with col2:
             st.subheader("Réu")
-            st.text_input("Nome / Razão social", key="reu_nome", placeholder="Ex.: Empresa XYZ LTDA")
+            st.text_input("Nome / Razão social *", key="reu_nome", placeholder="Ex.: Empresa XYZ LTDA")
             st.text_input(
-                "CPF/CNPJ do réu",
+                "CPF/CNPJ do réu *",
                 key="reu_doc",
                 placeholder="000.000.000-00 ou 00.000.000/0000-00",
+                on_change=_aplicar_mascara_documento,
+                args=("reu_doc",),
             )
             st.text_input(
-                "Endereço do réu",
+                "Endereço do réu *",
                 key="reu_end",
                 placeholder="Rua, número, bairro, cidade/UF",
             )
@@ -1371,7 +1379,7 @@ with st.form("form_peticao"):
     elif etapa_atual == "Fatos e Provas":
         _titulo_secao("4) Narrativa Fática")
         st.text_area(
-            "Fatos principais",
+            "Fatos principais *",
             key="fatos",
             height=180,
             placeholder="Descreva os fatos de forma cronológica e objetiva.",
@@ -1392,7 +1400,7 @@ with st.form("form_peticao"):
     elif etapa_atual == "Fundamentação":
         _titulo_secao("5) Fundamentação Jurídica")
         st.text_area(
-            "Teses jurídicas (linha de argumentação)",
+            "Teses jurídicas (linha de argumentação) *",
             key="teses_juridicas",
             height=130,
             placeholder="Quais pontos jurídicos devem ser defendidos na petição.",
@@ -1455,9 +1463,11 @@ with st.form("form_peticao"):
 
         with fim2:
             st.text_input(
-                "Valor da causa (se souber)",
+                "Valor da causa (se souber) *",
                 key="valor_causa",
                 placeholder="Digite apenas números. Ex.: 125000 -> R$ 1.250,00",
+                on_change=_aplicar_mascara_moeda,
+                args=("valor_causa",),
             )
             st.radio(
                 "Nível de detalhamento",
@@ -1481,15 +1491,15 @@ with st.form("form_peticao"):
     if etapa_atual == "Finalização e Geração":
         nav1, nav2 = st.columns(2)
         with nav1:
-            voltar_etapa = st.form_submit_button("Voltar")
+            voltar_etapa = st.button("Voltar", key="btn_voltar_final")
         with nav2:
-            gerar = st.form_submit_button("Gerar petição", on_click=_aplicar_mascaras_formulario)
+            gerar = st.button("Gerar petição", key="btn_gerar")
     else:
         nav1, nav2 = st.columns(2)
         with nav1:
-            voltar_etapa = st.form_submit_button("Voltar", disabled=etapa_idx == 0)
+            voltar_etapa = st.button("Voltar", key="btn_voltar", disabled=etapa_idx == 0)
         with nav2:
-            avancar_etapa = st.form_submit_button("Avançar")
+            avancar_etapa = st.button("Avançar", key="btn_avancar")
 
 _salvar_snapshot_formulario()
 
@@ -1511,6 +1521,7 @@ if avancar_etapa:
 
 if gerar:
     _restaurar_snapshot_formulario()
+    _aplicar_mascaras_formulario()
     faltantes_geracao = _validar_essenciais_para_geracao()
     if faltantes_geracao:
         itens = "\n".join(f"- {item}" for item in faltantes_geracao)
