@@ -18,6 +18,44 @@ from exporters.pdf_exporter import texto_para_pdf_bytes
 from services.gemini_service import GeminiServiceError, gerar_peticao
 from services.prompt_builder import montar_prompt
 
+# ============================================================================
+# SISTEMA DE AUTENTICAÇÃO
+# ============================================================================
+
+load_dotenv()
+
+SENHA_APP = os.getenv("APP_PASSWORD")  # coloque no Secrets do Streamlit
+
+
+def exigir_senha():
+    """Exige autenticação por senha antes de permitir acesso ao sistema."""
+    if "autenticado" not in st.session_state:
+        st.session_state.autenticado = False
+
+    if st.session_state.autenticado:
+        return True
+
+    st.title("🔒 Acesso restrito")
+    st.markdown("---")
+    senha = st.text_input("Senha", type="password")
+
+    if st.button("Entrar"):
+        if senha == SENHA_APP and SENHA_APP:
+            st.session_state.autenticado = True
+            st.rerun()
+        else:
+            st.error("❌ Senha incorreta.")
+    return False
+
+
+# Bloqueia execução se não estiver autenticado
+if not exigir_senha():
+    st.stop()
+
+# ============================================================================
+# CONSTANTES E CONFIGURAÇÕES
+# ============================================================================
+
 AREAS_DIREITO = [
     "Previdenciário",
     "Direito da Saúde",
