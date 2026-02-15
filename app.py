@@ -3,41 +3,118 @@
 import os
 import re
 import html
+import json
 from typing import Any
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 import streamlit as st
 from dotenv import load_dotenv
 
 from exporters.docx_exporter import texto_para_docx_bytes
+from exporters.pdf_exporter import texto_para_pdf_bytes
 from services.gemini_service import GeminiServiceError, gerar_peticao
 from services.prompt_builder import montar_prompt
 
 AREAS_DIREITO = [
-    "Civil",
-    "Consumidor",
-    "Trabalhista",
     "Previdenciário",
-    "Tributário",
-    "Empresarial",
-    "Família e Sucessões",
-    "Administrativo",
-    "Outro",
+    "Direito da Saúde",
 ]
 
 ALIAS_AREA_CAMPOS = {
     "Previdenciário": "Previdenciario",
-    "Tributário": "Tributario",
-    "Família e Sucessões": "Familia e Sucessoes",
+    "Direito da Saúde": "Direito da Saude",
 }
 
-RITOS_PROCESSUAIS = [
-    "Comum",
-    "Juizado Especial",
-    "Procedimento Especial",
-    "Cumprimento de Sentença",
-    "Execução",
-    "Outro",
-]
+TIPOS_ACAO_POR_AREA: dict[str, list[str]] = {
+    "Previdenciário": [
+        "Concessão de benefício",
+        "Restabelecimento de benefício",
+        "Revisão de benefício",
+        "Auxílio-doença / Benefício por incapacidade",
+        "BPC/LOAS",
+        "Aposentadoria (idade/tempo/especial)",
+        "Mandado de segurança previdenciário",
+    ],
+    "Direito da Saúde": [
+        "Obrigação de fazer (Plano de saúde: cobertura/tratamento/medicamento)",
+        "Obrigação de fazer (SUS/Ente público: fornecimento de medicamento/terapia)",
+        "Tutela de urgência (tratamento imediato)",
+        "Reembolso de despesas médicas",
+        "Home care",
+        "Internação/UTI",
+        "Mandado de segurança (saúde)",
+    ],
+    "Outro": [
+        "Ação ordinária",
+        "Ação declaratória",
+        "Mandado de segurança",
+        "Ação de execução",
+    ],
+}
+
+RITOS_POR_AREA: dict[str, list[str]] = {
+    "Previdenciário": [
+        "Juizado Especial Federal (até 60 salários mínimos)",
+        "Procedimento Comum (CPC)",
+        "Mandado de Segurança (rito próprio)",
+    ],
+    "Direito da Saúde": [
+        "Procedimento Comum (CPC)",
+        "Tutela de urgência antecedente (CPC)",
+        "Mandado de Segurança (rito próprio)",
+        "Juizado Especial (se cabível)",
+    ],
+    "Outro": [
+        "Procedimento Comum (CPC)",
+        "Procedimento Especial",
+        "Execução",
+    ],
+}
+
+NATUREZA_RELACAO_OPCOES: dict[str, list[str]] = {
+    "Previdenciario": [
+        "Benefício por incapacidade",
+        "Aposentadoria",
+        "BPC/LOAS",
+        "Pensão por morte",
+        "Outro",
+    ],
+    "Direito da Saude": [
+        "Plano de saúde (contrato/cobertura)",
+        "SUS / Ente público (obrigação estatal)",
+        "Hospital/Clínica (prestação de serviço)",
+        "Profissional de saúde (responsabilidade civil)",
+        "Outro",
+    ],
+    "Outro": [
+        "Outro",
+    ],
+}
+
+PROVAS_SUGERIDAS_POR_AREA: dict[str, list[str]] = {
+    "Previdenciário": [
+        "CNIS",
+        "Carta de indeferimento administrativo",
+        "Comprovante de requerimento administrativo",
+        "Laudos e relatórios médicos",
+        "Atestados médicos",
+        "Carteira de trabalho (CTPS)",
+        "Comprovantes de contribuição",
+    ],
+    "Direito da Saúde": [
+        "Relatório médico",
+        "Prescrição médica",
+        "Negativa formal de cobertura/atendimento",
+        "Protocolos de atendimento",
+        "Notas fiscais e orçamentos",
+        "Exames e laudos complementares",
+        "Contrato/carteirinha do plano",
+    ],
+    "Outro": [
+        "Documentos essenciais do caso",
+    ],
+}
 
 TEMAS_JURIDICOS_COMUNS = [
     "Responsabilidade civil",
@@ -77,6 +154,7 @@ SECOES_SUGERIDAS = [
 ]
 
 NIVEIS_DETALHAMENTO = ["Enxuto", "Padrão", "Aprofundado"]
+TIPOS_PESSOA_OPCOES = ["Pessoa Física", "Pessoa Jurídica"]
 
 ETAPAS_FLUXO = [
     "Contexto Processual",
@@ -94,17 +172,32 @@ CHAVES_FORMULARIO_BASE = [
     "rito",
     "comarca_uf",
     "foro_vara",
+    "autor_tipo_pessoa",
     "autor_nome",
     "autor_doc",
+    "autor_cep",
     "autor_end",
+    "autor_nacionalidade",
+    "autor_estado_civil",
+    "autor_profissao",
+    "autor_natureza_juridica",
+    "autor_representante_legal",
     "autor_qualificacao",
+    "reu_tipo_pessoa",
     "reu_nome",
     "reu_doc",
+    "reu_cep",
     "reu_end",
+    "reu_nacionalidade",
+    "reu_estado_civil",
+    "reu_profissao",
+    "reu_natureza_juridica",
+    "reu_representante_legal",
     "reu_qualificacao",
     "partes_adicionais_raw",
     "fatos",
     "cronologia_raw",
+    "provas_sugeridas",
     "provas_raw",
     "teses_juridicas",
     "temas_comuns",
@@ -115,6 +208,9 @@ CHAVES_FORMULARIO_BASE = [
     "secoes_sugeridas",
     "secoes_extras_raw",
     "valor_causa",
+    "advogado_nome",
+    "advogado_oab_uf",
+    "advogado_oab_num",
     "nivel_detalhamento",
     "tem_tutela_urgencia",
     "tem_gratuidade",
@@ -124,100 +220,24 @@ CHAVES_FORMULARIO_BASE = [
 ]
 
 CAMPOS_POR_AREA: dict[str, list[dict[str, Any]]] = {
-    "Civil": [
+    "Previdenciario": [
         {
             "id": "natureza_relacao_juridica",
             "label": "Natureza da relação jurídica",
-            "widget": "text",
-            "placeholder": "Ex.: Contrato de prestação de serviços",
+            "widget": "select",
+            "options": NATUREZA_RELACAO_OPCOES["Previdenciario"],
         },
-        {
-            "id": "bem_ou_obrigacao_discutida",
-            "label": "Bem/obrigação discutida",
-            "widget": "text",
-            "placeholder": "Ex.: Restituição de valores pagos",
-        },
-        {
-            "id": "inadimplemento_ou_ilicito",
-            "label": "Inadimplemento ou ato ilícito",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Descreva objetivamente o descumprimento.",
-        },
-        {
-            "id": "tentativa_extrajudicial",
-            "label": "Tentativas extrajudiciais",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Negociações, notificações ou acordos frustrados.",
-        },
-    ],
-    "Consumidor": [
-        {
-            "id": "produto_servico",
-            "label": "Produto ou serviço envolvido",
-            "widget": "text",
-            "placeholder": "Ex.: Plano de internet residencial",
-        },
-        {
-            "id": "falha_prestacao",
-            "label": "Falha na prestação/vício",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Descreva a falha e impacto no consumidor.",
-        },
-        {
-            "id": "protocolos_atendimento",
-            "label": "Protocolos/atendimento (opcional)",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Um protocolo por linha.",
-        },
-        {
-            "id": "inversao_onus_prova",
-            "label": "Solicitar inversão do ônus da prova",
-            "widget": "checkbox",
-        },
-    ],
-    "Trabalhista": [
-        {
-            "id": "periodo_contrato",
-            "label": "Período contratual",
-            "widget": "text",
-            "placeholder": "Ex.: 02/2020 a 11/2025",
-        },
-        {
-            "id": "funcao_salario",
-            "label": "Função e salário",
-            "widget": "text",
-            "placeholder": "Ex.: Analista - R$ 3.500,00",
-        },
-        {
-            "id": "jornada_praticada",
-            "label": "Jornada praticada",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Descreva horários, intervalos e extras.",
-        },
-        {
-            "id": "verbas_pretendidas",
-            "label": "Verbas trabalhistas pretendidas",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Uma verba por linha.",
-        },
-    ],
-    "Previdenciario": [
         {
             "id": "beneficio_pretendido",
-            "label": "Beneficio pretendido",
+            "label": "Benefício pretendido",
             "widget": "select",
             "options": [
                 "Aposentadoria por idade",
-                "Aposentadoria por tempo de contribuicao",
-                "Auxilio-doenca",
+                "Aposentadoria por tempo de contribuição",
+                "Auxílio por incapacidade temporária",
                 "BPC/LOAS",
-                "Pensao por morte",
+                "Pensão por morte",
+                "Aposentadoria por invalidez",
                 "Outro",
             ],
         },
@@ -225,169 +245,146 @@ CAMPOS_POR_AREA: dict[str, list[dict[str, Any]]] = {
             "id": "nb_ou_requerimento",
             "label": "NB/protocolo administrativo (opcional)",
             "widget": "text",
-            "placeholder": "Ex.: 1234567890",
+            "placeholder": "Ex.: NB 123.456.789-0",
         },
         {
             "id": "der_dib",
             "label": "DER/DIB (se houver)",
             "widget": "text",
-            "placeholder": "Ex.: DER 10/01/2026",
+            "placeholder": "Ex.: DER 10/01/2026 - DIB 15/02/2026",
         },
         {
-            "id": "tempo_contribuicao",
-            "label": "Tempo de contribuicao e qualidade de segurado",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Resumo dos periodos e contribuicoes.",
-        },
-    ],
-    "Tributario": [
-        {
-            "id": "tributo_discutido",
-            "label": "Tributo discutido",
-            "widget": "text",
-            "placeholder": "Ex.: ICMS, ISS, IRPJ",
-        },
-        {
-            "id": "periodo_apuracao",
-            "label": "Periodo de apuracao",
-            "widget": "text",
-            "placeholder": "Ex.: 01/2022 a 12/2023",
-        },
-        {
-            "id": "ato_fiscal_impugnado",
-            "label": "Ato fiscal/lancamento impugnado",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Descreva auto de infracao, notificacao etc.",
-        },
-        {
-            "id": "pedido_restituicao_compensacao",
-            "label": "Incluir pedido de restituicao/compensacao",
-            "widget": "checkbox",
-        },
-    ],
-    "Empresarial": [
-        {
-            "id": "tipo_relacao_empresarial",
-            "label": "Tipo de relacao empresarial",
+            "id": "tempo_contribuicao_total",
+            "label": "Tempo total de contribuição (aproximado)",
             "widget": "select",
             "options": [
-                "Contrato mercantil",
-                "Societario",
-                "Titulos de credito",
-                "Propriedade intelectual",
+                "Até 1 ano",
+                "1 a 5 anos",
+                "5 a 10 anos",
+                "10 a 15 anos",
+                "15 anos ou mais",
+                "20 anos ou mais",
+                "30 anos ou mais",
+                "35 anos ou mais",
                 "Outro",
             ],
+            "accept_new_options": True,
         },
         {
-            "id": "clausulas_relevantes",
-            "label": "Clausulas/obrigacoes relevantes",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Itens-chave do instrumento contratual/societario.",
-        },
-        {
-            "id": "impacto_negocio",
-            "label": "Impacto no negocio",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Danos operacionais, financeiros ou reputacionais.",
-        },
-        {
-            "id": "tentativas_negociacao",
-            "label": "Tentativas de negociacao pre-processual",
-            "widget": "textarea",
-            "height": 90,
-            "placeholder": "Resumo das tratativas e respostas.",
-        },
-    ],
-    "Familia e Sucessoes": [
-        {
-            "id": "subtipo_familia",
-            "label": "Subtipo da demanda",
+            "id": "qualidade_segurado",
+            "label": "Situação da qualidade de segurado",
             "widget": "select",
             "options": [
-                "Alimentos",
-                "Guarda e convivencia",
-                "Divorcio",
-                "Uniao estavel",
-                "Inventario/sucessao",
+                "Mantida (contribuindo)",
+                "Período de graça – 12 meses",
+                "Período de graça – 24 meses",
+                "Período de graça – 36 meses (desemprego comprovado)",
+                "Em gozo de benefício",
+                "Perda da qualidade de segurado",
                 "Outro",
             ],
+            "accept_new_options": True,
         },
         {
-            "id": "existem_filhos_menores",
-            "label": "Existem filhos menores envolvidos",
-            "widget": "checkbox",
-        },
-        {
-            "id": "regime_bens",
-            "label": "Regime de bens (se aplicavel)",
+            "id": "carencia_cumprida",
+            "label": "Carência cumprida?",
             "widget": "select",
             "options": [
-                "Comunhao parcial",
-                "Comunhao universal",
-                "Separacao convencional",
-                "Separacao obrigatoria",
-                "Participacao final nos aquestos",
-                "Nao informado",
+                "Sim",
+                "Não",
+                "Em discussão",
             ],
         },
         {
-            "id": "pedido_familiar_central",
-            "label": "Pedido familiar/sucessorio central",
+            "id": "tempo_contribuicao_detalhe",
+            "label": "Resumo detalhado dos períodos (opcional)",
             "widget": "textarea",
             "height": 90,
-            "placeholder": "Ex.: guarda unilateral com convivio assistido.",
+        },
+        {
+            "id": "incapacidade_limitacao",
+            "label": "Incapacidade/limitação funcional (se houver)",
+            "widget": "textarea",
+            "height": 90,
+            "placeholder": "Descreva limitações e impacto no trabalho/vida diária.",
         },
     ],
-    "Administrativo": [
+    "Direito da Saude": [
         {
-            "id": "orgao_autoridade",
-            "label": "Orgao/autoridade envolvida",
-            "widget": "text",
-            "placeholder": "Ex.: INSS, Prefeitura, Receita Federal",
+            "id": "natureza_relacao_juridica",
+            "label": "Natureza da relação",
+            "widget": "select",
+            "options": NATUREZA_RELACAO_OPCOES["Direito da Saude"],
+            "accept_new_options": True,
         },
         {
-            "id": "ato_administrativo",
-            "label": "Ato administrativo questionado",
+            "id": "reu_tipo_saude",
+            "label": "Quem é o réu?",
+            "widget": "select",
+            "options": [
+                "Plano de saúde",
+                "Município",
+                "Estado",
+                "União",
+                "Hospital/Clínica",
+                "Outro",
+            ],
+            "accept_new_options": True,
+        },
+        {
+            "id": "tratamento_medicamento",
+            "label": "Tratamento/medicamento/procedimento",
             "widget": "textarea",
             "height": 90,
-            "placeholder": "Descreva ato, data e efeitos concretos.",
+            "placeholder": "Nome, dose, periodicidade, duração (se souber).",
         },
         {
-            "id": "fase_admin",
-            "label": "Fase do processo administrativo",
+            "id": "urgencia_laudo",
+            "label": "Urgência e indicação médica (conforme laudo/relatório)",
+            "widget": "textarea",
+            "height": 90,
+            "placeholder": "Resuma o que consta no laudo/relatório, sem inventar.",
+        },
+        {
+            "id": "negativa_motivo",
+            "label": "Negativa e motivo alegado (se houver)",
+            "widget": "textarea",
+            "height": 90,
+            "placeholder": "Ex.: carência, 'fora do rol', 'experimental', falta de estoque, etc.",
+        },
+        {
+            "id": "prazo_cumprimento",
+            "label": "Prazo desejado para cumprimento (opcional)",
             "widget": "text",
-            "placeholder": "Ex.: indeferimento em 1a instancia administrativa",
+            "placeholder": "Ex.: 24h, 48h, 5 dias",
         },
         {
-            "id": "pedido_liminar_area",
-            "label": "Necessidade de medida liminar especifica",
-            "widget": "checkbox",
+            "id": "astreintes",
+            "label": "Multa diária (astreintes) sugerida (opcional)",
+            "widget": "text",
+            "placeholder": "Ex.: R$ 1.000,00/dia",
         },
     ],
     "Outro": [
         {
             "id": "contexto_setorial",
-            "label": "Contexto tecnico/setorial da causa",
+            "label": "Contexto técnico/setorial da causa",
             "widget": "textarea",
             "height": 90,
             "placeholder": "Explique o contexto especializado do caso.",
         },
         {
             "id": "objeto_principal",
-            "label": "Objeto principal da pretensao",
+            "label": "Objeto principal da pretensão",
             "widget": "text",
-            "placeholder": "Ex.: Declaracao de nulidade de clausula X",
+            "placeholder": "Ex.: declaração de nulidade de cláusula X",
         },
         {
             "id": "riscos_sensiveis",
-            "label": "Riscos/pontos sensiveis",
+            "label": "Riscos/pontos sensíveis",
             "widget": "textarea",
             "height": 90,
-            "placeholder": "Aspectos que exigem cuidado na redacao.",
+            "placeholder": "Aspectos que exigem cuidado na redação.",
         },
     ],
 }
@@ -565,7 +562,26 @@ def _renderizar_campo_area(area: str, campo: dict[str, Any]) -> None:
 
     if tipo_widget == "select":
         opcoes = [str(item) for item in campo.get("options", [])]
-        st.selectbox(rotulo, opcoes or ["[PREENCHER]"], key=chave, help=ajuda)
+        if not opcoes:
+            st.selectbox(rotulo, ["[PREENCHER]"], key=chave, help=ajuda)
+            return
+
+        aceitar_novas_opcoes = bool(campo.get("accept_new_options", campo_id == "natureza_relacao_juridica"))
+        if aceitar_novas_opcoes:
+            kwargs_select: dict[str, Any] = {
+                "label": rotulo,
+                "options": opcoes,
+                "key": chave,
+                "help": ajuda,
+                "placeholder": placeholder or "Selecione ou digite para buscar/criar...",
+                "accept_new_options": True,
+            }
+            if chave not in st.session_state:
+                kwargs_select["index"] = None
+            st.selectbox(**kwargs_select)
+            return
+
+        st.selectbox(rotulo, opcoes, key=chave, help=ajuda)
         return
 
     if tipo_widget == "multiselect":
@@ -643,6 +659,14 @@ def _nome_arquivo_docx(autor_nome: str) -> str:
     return f"Petição Inicial - {nome_autor}.docx"
 
 
+ # Gera o nome padrão do PDF com base no nome do autor.
+def _nome_arquivo_pdf(autor_nome: str) -> str:
+    nome_autor = _sanitizar_nome_arquivo(autor_nome)
+    if not nome_autor:
+        nome_autor = "[NOME DO AUTOR]"
+    return f"Petição Inicial - {nome_autor}.pdf"
+
+
  # Aplica máscara de CPF/CNPJ em um campo de documento.
 def _aplicar_mascara_documento(campo: str) -> None:
     st.session_state[campo] = _formatar_cpf_cnpj(st.session_state.get(campo, ""))
@@ -653,24 +677,388 @@ def _aplicar_mascara_moeda(campo: str) -> None:
     st.session_state[campo] = _formatar_moeda_br(st.session_state.get(campo, ""))
 
 
+ # Aplica máscara de CEP em um campo.
+def _aplicar_mascara_cep(campo: str) -> None:
+    st.session_state[campo] = _formatar_cep_br(st.session_state.get(campo, ""))
+
+
  # Aplica todas as máscaras necessárias antes da geração da peça.
 def _aplicar_mascaras_formulario() -> None:
     _aplicar_mascara_documento("autor_doc")
     _aplicar_mascara_documento("reu_doc")
+    _aplicar_mascara_cep("autor_cep")
+    _aplicar_mascara_cep("reu_cep")
     _aplicar_mascara_moeda("valor_causa")
+
+
+ # Sugere o tipo de pessoa mais comum por área para facilitar o preenchimento.
+def _sugerir_tipo_pessoa(area_direito: str, papel: str) -> str:
+    area = (area_direito or "").strip()
+    papel_norm = (papel or "").strip().lower()
+    if area == "Previdenciário":
+        return "Pessoa Física" if papel_norm == "autor" else "Pessoa Jurídica"
+    if area == "Direito da Saúde":
+        return "Pessoa Física" if papel_norm == "autor" else "Pessoa Jurídica"
+    return "Pessoa Física"
+
+
+ # Renderiza o seletor PF/PJ com sugestão inicial por área e parte processual.
+def _renderizar_tipo_pessoa_parte(papel: str, area_direito: str) -> None:
+    key = f"{papel}_tipo_pessoa"
+    kwargs: dict[str, Any] = {
+        "label": "Tipo de pessoa",
+        "options": TIPOS_PESSOA_OPCOES,
+        "key": key,
+        "horizontal": True,
+    }
+    if key not in st.session_state:
+        sugestao = _sugerir_tipo_pessoa(area_direito, papel)
+        kwargs["index"] = TIPOS_PESSOA_OPCOES.index(sugestao) if sugestao in TIPOS_PESSOA_OPCOES else 0
+    st.radio(**kwargs)
+
+
+ # Retorna texto limpo de um campo no session_state.
+def _texto_campo(chave: str) -> str:
+    return str(st.session_state.get(chave, "")).strip()
+
+
+ # Monta a qualificação textual conforme PF/PJ para cada parte.
+def _montar_qualificacao_parte(papel: str, tipo_pessoa: str) -> str:
+    prefixo = (papel or "").strip().lower()
+    base_extra = _texto_campo(f"{prefixo}_qualificacao")
+    partes: list[str] = []
+
+    if tipo_pessoa == "Pessoa Jurídica":
+        natureza_juridica = _texto_campo(f"{prefixo}_natureza_juridica")
+        representante_legal = _texto_campo(f"{prefixo}_representante_legal")
+        if natureza_juridica:
+            partes.append(f"Natureza jurídica: {natureza_juridica}")
+        if representante_legal:
+            partes.append(f"Representante legal: {representante_legal}")
+    else:
+        nacionalidade = _texto_campo(f"{prefixo}_nacionalidade")
+        estado_civil = _texto_campo(f"{prefixo}_estado_civil")
+        profissao = _texto_campo(f"{prefixo}_profissao")
+        if nacionalidade:
+            partes.append(f"Nacionalidade: {nacionalidade}")
+        if estado_civil:
+            partes.append(f"Estado civil: {estado_civil}")
+        if profissao:
+            partes.append(f"Profissão: {profissao}")
+
+    if base_extra:
+        partes.append(base_extra)
+
+    return "; ".join(partes)
+
+
+ # Consolida os dados de uma parte (autor/réu) com estrutura PF/PJ.
+def _coletar_dados_parte(papel: str) -> dict[str, str]:
+    prefixo = (papel or "").strip().lower()
+    tipo_pessoa = _texto_campo(f"{prefixo}_tipo_pessoa") or "Pessoa Física"
+    qualificacao = _montar_qualificacao_parte(prefixo, tipo_pessoa)
+
+    return {
+        "tipo_pessoa": tipo_pessoa,
+        "nome": _texto_campo(f"{prefixo}_nome"),
+        "documento": _formatar_cpf_cnpj(_texto_campo(f"{prefixo}_doc")),
+        "cep": _formatar_cep_br(_texto_campo(f"{prefixo}_cep")),
+        "endereco": _texto_campo(f"{prefixo}_end"),
+        "qualificacao": qualificacao,
+        "nacionalidade": _texto_campo(f"{prefixo}_nacionalidade"),
+        "estado_civil": _texto_campo(f"{prefixo}_estado_civil"),
+        "profissao": _texto_campo(f"{prefixo}_profissao"),
+        "natureza_juridica": _texto_campo(f"{prefixo}_natureza_juridica"),
+        "representante_legal": _texto_campo(f"{prefixo}_representante_legal"),
+    }
+
+
+ # Formata CEP brasileiro no padrão 00000-000.
+def _formatar_cep_br(valor: str) -> str:
+    digitos = _somente_digitos(valor)
+    if len(digitos) <= 5:
+        return digitos
+    return f"{digitos[:5]}-{digitos[5:8]}"
+
+
+ # Extrai nome de representante legal/sócio principal do retorno da BrasilAPI.
+def _extrair_representante_brasilapi(dados_api: dict[str, Any]) -> str:
+    qsa = dados_api.get("qsa", [])
+    if not isinstance(qsa, list):
+        return ""
+
+    for socio in qsa:
+        if not isinstance(socio, dict):
+            continue
+        nome_rep = str(socio.get("nome_representante_legal", "")).strip()
+        if nome_rep:
+            return nome_rep
+
+    for socio in qsa:
+        if not isinstance(socio, dict):
+            continue
+        nome_socio = str(socio.get("nome_socio", "")).strip()
+        if nome_socio:
+            return nome_socio
+
+    return ""
+
+
+ # Monta endereço textual a partir da resposta da BrasilAPI.
+def _montar_endereco_pj_brasilapi(dados_api: dict[str, Any]) -> str:
+    tipo_logradouro = str(dados_api.get("descricao_tipo_de_logradouro", "")).strip()
+    logradouro = str(dados_api.get("logradouro", "")).strip()
+    numero = str(dados_api.get("numero", "")).strip() or "S/N"
+    complemento = str(dados_api.get("complemento", "")).strip()
+    bairro = str(dados_api.get("bairro", "")).strip()
+    municipio = str(dados_api.get("municipio", "")).strip()
+    uf = str(dados_api.get("uf", "")).strip()
+    cep = _formatar_cep_br(str(dados_api.get("cep", "")))
+
+    linha_logradouro = " ".join(item for item in [tipo_logradouro, logradouro] if item).strip()
+    if linha_logradouro:
+        linha_logradouro = f"{linha_logradouro}, {numero}"
+    else:
+        linha_logradouro = ""
+
+    partes = [linha_logradouro, complemento, bairro]
+
+    cidade_uf = " / ".join(item for item in [municipio, uf] if item).strip(" /")
+    if cidade_uf:
+        partes.append(cidade_uf)
+    if cep:
+        partes.append(f"CEP {cep}")
+
+    partes_validas = [parte for parte in partes if parte]
+    return " - ".join(partes_validas)
+
+
+ # Consulta dados públicos de CNPJ na BrasilAPI.
+@st.cache_data(ttl=3600, show_spinner=False)
+def _consultar_cnpj_brasilapi(cnpj_digitos: str) -> dict[str, Any]:
+    digitos = _somente_digitos(cnpj_digitos)
+    if len(digitos) != 14:
+        raise ValueError("Informe um CNPJ com 14 dígitos para consulta.")
+
+    url = f"https://brasilapi.com.br/api/cnpj/v1/{digitos}"
+    req = urlrequest.Request(url, headers={"User-Agent": "streamlit-app/1.0"})
+
+    try:
+        with urlrequest.urlopen(req, timeout=12) as resp:
+            conteudo = resp.read().decode("utf-8")
+    except urlerror.HTTPError as exc:
+        if exc.code == 404:
+            raise ValueError("CNPJ não encontrado na BrasilAPI.") from exc
+        raise ValueError(f"Falha ao consultar CNPJ na BrasilAPI (HTTP {exc.code}).") from exc
+    except urlerror.URLError as exc:
+        raise ValueError("Não foi possível conectar à BrasilAPI.") from exc
+    except TimeoutError as exc:
+        raise ValueError("Tempo esgotado na consulta do CNPJ.") from exc
+
+    try:
+        dados_api = json.loads(conteudo)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Resposta inválida da BrasilAPI.") from exc
+
+    if not isinstance(dados_api, dict):
+        raise ValueError("Resposta inválida da BrasilAPI.")
+    return dados_api
+
+
+ # Consulta dados públicos de CEP na BrasilAPI.
+@st.cache_data(ttl=3600, show_spinner=False)
+def _consultar_cep_brasilapi(cep_digitos: str) -> dict[str, Any]:
+    digitos = _somente_digitos(cep_digitos)
+    if len(digitos) != 8:
+        raise ValueError("Informe um CEP com 8 dígitos para consulta.")
+
+    url = f"https://brasilapi.com.br/api/cep/v1/{digitos}"
+    req = urlrequest.Request(url, headers={"User-Agent": "streamlit-app/1.0"})
+
+    try:
+        with urlrequest.urlopen(req, timeout=12) as resp:
+            conteudo = resp.read().decode("utf-8")
+    except urlerror.HTTPError as exc:
+        if exc.code == 404:
+            raise ValueError("CEP não encontrado na BrasilAPI.") from exc
+        raise ValueError(f"Falha ao consultar CEP na BrasilAPI (HTTP {exc.code}).") from exc
+    except urlerror.URLError as exc:
+        raise ValueError("Não foi possível conectar à BrasilAPI para consulta de CEP.") from exc
+    except TimeoutError as exc:
+        raise ValueError("Tempo esgotado na consulta do CEP.") from exc
+
+    try:
+        dados_api = json.loads(conteudo)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Resposta inválida da BrasilAPI para CEP.") from exc
+
+    if not isinstance(dados_api, dict):
+        raise ValueError("Resposta inválida da BrasilAPI para CEP.")
+    return dados_api
+
+
+ # Monta endereço a partir do retorno da BrasilAPI de CEP.
+def _montar_endereco_cep_brasilapi(dados_api: dict[str, Any]) -> str:
+    rua = str(dados_api.get("street", "")).strip()
+    bairro = str(dados_api.get("neighborhood", "")).strip()
+    cidade = str(dados_api.get("city", "")).strip()
+    uf = str(dados_api.get("state", "")).strip()
+    cep = _formatar_cep_br(str(dados_api.get("cep", "")))
+
+    partes = [rua, bairro]
+    cidade_uf = " / ".join(item for item in [cidade, uf] if item).strip(" /")
+    if cidade_uf:
+        partes.append(cidade_uf)
+    if cep:
+        partes.append(f"CEP {cep}")
+
+    partes_validas = [item for item in partes if item]
+    return " - ".join(partes_validas)
+
+
+ # Preenche campos de parte PJ com base no CNPJ consultado na BrasilAPI.
+def _preencher_parte_com_cnpj(papel: str) -> None:
+    prefixo = (papel or "").strip().lower()
+    feedback_key = f"_{prefixo}_cnpj_feedback"
+
+    cnpj_digitos = _somente_digitos(_texto_campo(f"{prefixo}_doc"))
+    if len(cnpj_digitos) != 14:
+        st.session_state[feedback_key] = ("error", "Informe um CNPJ válido (14 dígitos) antes de buscar.")
+        return
+
+    try:
+        dados_api = _consultar_cnpj_brasilapi(cnpj_digitos)
+    except ValueError as exc:
+        st.session_state[feedback_key] = ("error", str(exc))
+        return
+    except Exception:
+        st.session_state[feedback_key] = ("error", "Erro inesperado ao consultar CNPJ.")
+        return
+
+    razao_social = str(dados_api.get("razao_social", "")).strip()
+    nome_fantasia = str(dados_api.get("nome_fantasia", "")).strip()
+    natureza_juridica = str(dados_api.get("natureza_juridica", "")).strip()
+    endereco = _montar_endereco_pj_brasilapi(dados_api)
+    cep_cnpj = _formatar_cep_br(str(dados_api.get("cep", "")))
+    representante_legal = _extrair_representante_brasilapi(dados_api)
+    situacao = str(dados_api.get("descricao_situacao_cadastral", "")).strip()
+    email = str(dados_api.get("email", "")).strip()
+    telefone = _somente_digitos(str(dados_api.get("ddd_telefone_1", "")))
+
+    st.session_state[f"{prefixo}_tipo_pessoa"] = "Pessoa Jurídica"
+    if razao_social:
+        st.session_state[f"{prefixo}_nome"] = razao_social
+    elif nome_fantasia:
+        st.session_state[f"{prefixo}_nome"] = nome_fantasia
+
+    if natureza_juridica:
+        st.session_state[f"{prefixo}_natureza_juridica"] = natureza_juridica
+    if representante_legal:
+        st.session_state[f"{prefixo}_representante_legal"] = representante_legal
+    if cep_cnpj:
+        st.session_state[f"{prefixo}_cep"] = cep_cnpj
+    if endereco:
+        st.session_state[f"{prefixo}_end"] = endereco
+
+    extras: list[str] = []
+    if situacao:
+        extras.append(f"Situação cadastral: {situacao}")
+    if telefone:
+        extras.append(f"Telefone: {telefone}")
+    if email:
+        extras.append(f"E-mail: {email}")
+    if extras and not _texto_campo(f"{prefixo}_qualificacao"):
+        st.session_state[f"{prefixo}_qualificacao"] = "; ".join(extras)
+
+    st.session_state[feedback_key] = ("success", "Dados da pessoa jurídica preenchidos via BrasilAPI.")
+
+
+ # Preenche endereço da parte com base no CEP consultado.
+def _preencher_endereco_por_cep(papel: str) -> None:
+    prefixo = (papel or "").strip().lower()
+    feedback_key = f"_{prefixo}_cep_feedback"
+
+    cep_digitos = _somente_digitos(_texto_campo(f"{prefixo}_cep"))
+    if len(cep_digitos) != 8:
+        st.session_state[feedback_key] = ("error", "Informe um CEP válido (8 dígitos) antes de buscar.")
+        return
+
+    try:
+        dados_api = _consultar_cep_brasilapi(cep_digitos)
+    except ValueError as exc:
+        st.session_state[feedback_key] = ("error", str(exc))
+        return
+    except Exception:
+        st.session_state[feedback_key] = ("error", "Erro inesperado ao consultar CEP.")
+        return
+
+    endereco = _montar_endereco_cep_brasilapi(dados_api)
+    cep_fmt = _formatar_cep_br(str(dados_api.get("cep", cep_digitos)))
+    if cep_fmt:
+        st.session_state[f"{prefixo}_cep"] = cep_fmt
+
+    if endereco:
+        st.session_state[f"{prefixo}_end"] = endereco
+        st.session_state[feedback_key] = ("success", "Endereço preenchido via CEP. Revise número/complemento se necessário.")
+    else:
+        st.session_state[feedback_key] = ("error", "CEP encontrado, mas sem dados suficientes para montar endereço.")
+
+
+ # Mostra feedback de consulta CNPJ e remove a mensagem após exibir.
+def _exibir_feedback_cnpj(papel: str) -> None:
+    prefixo = (papel or "").strip().lower()
+    feedback_key = f"_{prefixo}_cnpj_feedback"
+    feedback = st.session_state.pop(feedback_key, None)
+    if not isinstance(feedback, tuple) or len(feedback) != 2:
+        return
+
+    tipo, mensagem = feedback
+    texto = str(mensagem or "").strip()
+    if not texto:
+        return
+
+    if str(tipo) == "success":
+        st.success(texto)
+    else:
+        st.error(texto)
+
+
+ # Mostra feedback de consulta de CEP e remove a mensagem após exibir.
+def _exibir_feedback_cep(papel: str) -> None:
+    prefixo = (papel or "").strip().lower()
+    feedback_key = f"_{prefixo}_cep_feedback"
+    feedback = st.session_state.pop(feedback_key, None)
+    if not isinstance(feedback, tuple) or len(feedback) != 2:
+        return
+
+    tipo, mensagem = feedback
+    texto = str(mensagem or "").strip()
+    if not texto:
+        return
+
+    if str(tipo) == "success":
+        st.success(texto)
+    else:
+        st.error(texto)
 
 
  # Consolida os dados do formulário no payload usado pelo prompt.
 def _coletar_payload() -> dict[str, Any]:
     area_direito = st.session_state.get("area_direito", "Outro")
     campos_area_especificos = _coletar_campos_area_especificos(area_direito)
+    valor_causa_fmt = _formatar_moeda_br(str(st.session_state.get("valor_causa", "")))
 
     pedidos_custom = _linhas_para_lista(st.session_state.get("pedidos_custom_raw", ""))
     pedidos_base = st.session_state.get("pedidos_base", [])
     pedidos_lista_final = _mesclar_itens(pedidos_base, pedidos_custom)
 
     fundamentos_legais = _linhas_para_lista(st.session_state.get("fundamentos_legais_raw", ""))
-    provas_documentos = _linhas_para_lista(st.session_state.get("provas_raw", ""))
+    provas_documentos_raw = _linhas_para_lista(st.session_state.get("provas_raw", ""))
+    provas_sugeridas_raw = st.session_state.get("provas_sugeridas", [])
+    if not isinstance(provas_sugeridas_raw, list):
+        provas_sugeridas_raw = []
+    provas_sugeridas = [str(item).strip() for item in provas_sugeridas_raw if str(item).strip()]
+    provas_documentos = _mesclar_itens(provas_sugeridas, provas_documentos_raw)
     cronologia = _linhas_para_lista(st.session_state.get("cronologia_raw", ""))
     partes_adicionais = _linhas_para_lista(st.session_state.get("partes_adicionais_raw", ""))
     secoes_extras = _linhas_para_lista(st.session_state.get("secoes_extras_raw", ""))
@@ -679,18 +1067,13 @@ def _coletar_payload() -> dict[str, Any]:
     temas_comuns = st.session_state.get("temas_comuns", [])
     temas_juridicos = _mesclar_itens(temas_comuns, temas_custom)
 
-    autor = {
-        "nome": st.session_state.get("autor_nome", ""),
-        "documento": st.session_state.get("autor_doc", ""),
-        "endereco": st.session_state.get("autor_end", ""),
-        "qualificacao": st.session_state.get("autor_qualificacao", ""),
-    }
+    autor = _coletar_dados_parte("autor")
+    reu = _coletar_dados_parte("reu")
 
-    reu = {
-        "nome": st.session_state.get("reu_nome", ""),
-        "documento": st.session_state.get("reu_doc", ""),
-        "endereco": st.session_state.get("reu_end", ""),
-        "qualificacao": st.session_state.get("reu_qualificacao", ""),
+    advogado = {
+        "nome": st.session_state.get("advogado_nome", ""),
+        "oab_uf": str(st.session_state.get("advogado_oab_uf", "")).strip().upper(),
+        "oab_num": st.session_state.get("advogado_oab_num", ""),
     }
 
     dados = {
@@ -710,6 +1093,7 @@ def _coletar_payload() -> dict[str, Any]:
         "narrativa": {
             "fatos": st.session_state.get("fatos", ""),
             "cronologia": cronologia,
+            "provas_sugeridas": provas_sugeridas,
             "provas_documentos": provas_documentos,
         },
         "fundamentacao": {
@@ -729,18 +1113,19 @@ def _coletar_payload() -> dict[str, Any]:
             "nivel_detalhamento": st.session_state.get("nivel_detalhamento", "Padrao"),
         },
         "parametros_finais": {
-            "valor_causa": st.session_state.get("valor_causa", ""),
+            "valor_causa": valor_causa_fmt,
             "tutela_urgencia": st.session_state.get("tem_tutela_urgencia", False),
             "justica_gratuita": st.session_state.get("tem_gratuidade", False),
             "prioridade_tramitacao": st.session_state.get("tem_prioridade", False),
             "audiencia_conciliacao": st.session_state.get("quer_audiencia", True),
         },
         "observacoes_estrategicas": st.session_state.get("obs_estrategicas", ""),
+        "advogado": advogado,
         "autor": autor,
         "reu": reu,
         "tipo_acao": st.session_state.get("tipo_acao", ""),
         "fatos": st.session_state.get("fatos", ""),
-        "valor_causa": st.session_state.get("valor_causa", ""),
+        "valor_causa": valor_causa_fmt,
     }
 
     return dados
@@ -916,9 +1301,9 @@ def _aplicar_estilo_preto_dourado() -> None:
         <style>
             .stApp {
                 background:
-                    radial-gradient(1200px 520px at -8% -8%, rgba(214, 170, 71, 0.22), rgba(0, 0, 0, 0) 55%),
-                    radial-gradient(900px 420px at 108% 4%, rgba(127, 98, 29, 0.25), rgba(0, 0, 0, 0) 52%),
-                    linear-gradient(180deg, #171717 0%, #101010 100%);
+                    radial-gradient(1200px 520px at -8% -8%, rgba(51, 96, 186, 0.34), rgba(9, 18, 39, 0) 58%),
+                    radial-gradient(950px 420px at 108% 4%, rgba(214, 170, 71, 0.2), rgba(9, 18, 39, 0) 54%),
+                    linear-gradient(180deg, #0c1730 0%, #08101f 100%);
                 color: #fbfbfb;
                 font-family: "Montserrat", "Trebuchet MS", sans-serif;
             }
@@ -930,8 +1315,8 @@ def _aplicar_estilo_preto_dourado() -> None:
             }
 
             [data-testid="stSidebar"] {
-                background: linear-gradient(180deg, #1a1a1a 0%, #121212 100%);
-                border-right: 1px solid rgba(216, 171, 73, 0.28);
+                background: linear-gradient(180deg, #0f1f3f 0%, #0a1428 100%);
+                border-right: 1px solid rgba(216, 171, 73, 0.34);
             }
 
             [data-testid="stSidebar"] .block-container {
@@ -940,10 +1325,10 @@ def _aplicar_estilo_preto_dourado() -> None:
 
             .fluxo-tracker {
                 margin-top: 0.45rem;
-                border: 1px solid rgba(216, 171, 73, 0.24);
+                border: 1px solid rgba(96, 145, 228, 0.34);
                 border-radius: 14px;
                 padding: 0.45rem 0.4rem;
-                background: #1b1b1b;
+                background: #122245;
             }
 
             .fluxo-item {
@@ -958,14 +1343,14 @@ def _aplicar_estilo_preto_dourado() -> None:
             }
 
             .fluxo-item.pendente {
-                color: #ececec;
-                background: rgba(255, 255, 255, 0.04);
+                color: #d9e6ff;
+                background: rgba(84, 130, 214, 0.14);
             }
 
             .fluxo-item.concluida {
-                color: #d6ffe2;
-                border-color: rgba(115, 196, 138, 0.35);
-                background: rgba(89, 180, 112, 0.14);
+                color: #dff0ff;
+                border-color: rgba(116, 170, 244, 0.58);
+                background: rgba(66, 120, 211, 0.24);
             }
 
             .fluxo-item.atual {
@@ -979,21 +1364,21 @@ def _aplicar_estilo_preto_dourado() -> None:
                 width: 1.22rem;
                 height: 1.22rem;
                 border-radius: 999px;
-                border: 1px solid rgba(216, 171, 73, 0.35);
+                border: 1px solid rgba(108, 157, 236, 0.5);
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
                 font-size: 0.72rem;
                 font-weight: 700;
-                color: #f5dc9c;
-                background: rgba(216, 171, 73, 0.12);
+                color: #ddeaff;
+                background: rgba(70, 117, 205, 0.3);
                 flex: 0 0 1.22rem;
             }
 
             .fluxo-item.concluida .fluxo-badge {
-                border-color: rgba(115, 196, 138, 0.55);
-                color: #d6ffe2;
-                background: rgba(89, 180, 112, 0.2);
+                border-color: rgba(132, 188, 255, 0.72);
+                color: #eff7ff;
+                background: rgba(80, 134, 225, 0.38);
             }
 
             .fluxo-item.atual .fluxo-badge {
@@ -1013,12 +1398,12 @@ def _aplicar_estilo_preto_dourado() -> None:
             }
 
             div[data-testid="stCaptionContainer"] p {
-                color: #d0d0d0 !important;
+                color: #b7c8e8 !important;
             }
 
             .main div[data-testid="stVerticalBlockBorderWrapper"],
             div[data-testid="stForm"] {
-                background: linear-gradient(180deg, rgba(35, 35, 35, 0.96), rgba(20, 20, 20, 0.96));
+                background: linear-gradient(180deg, rgba(21, 36, 70, 0.96), rgba(10, 20, 40, 0.96));
                 border: 1px solid rgba(216, 171, 73, 0.42);
                 border-radius: 20px;
                 padding: 1.3rem;
@@ -1031,7 +1416,7 @@ def _aplicar_estilo_preto_dourado() -> None:
                 overflow: hidden;
                 border-radius: 20px;
                 border: 1px solid rgba(216, 171, 73, 0.42);
-                background: linear-gradient(135deg, rgba(39, 39, 39, 0.95), rgba(20, 20, 20, 0.96));
+                background: linear-gradient(135deg, rgba(24, 43, 82, 0.96), rgba(11, 23, 46, 0.97));
                 padding: 1.15rem 1.25rem 1rem 1.25rem;
                 margin-bottom: 0.85rem;
                 box-shadow: 0 14px 28px rgba(0, 0, 0, 0.3);
@@ -1041,7 +1426,9 @@ def _aplicar_estilo_preto_dourado() -> None:
                 content: "";
                 position: absolute;
                 inset: -1px;
-                background: radial-gradient(circle at 88% 15%, rgba(246, 217, 139, 0.18), rgba(0, 0, 0, 0) 45%);
+                background:
+                    radial-gradient(circle at 88% 15%, rgba(246, 217, 139, 0.16), rgba(0, 0, 0, 0) 45%),
+                    radial-gradient(circle at 14% 90%, rgba(96, 145, 228, 0.16), rgba(0, 0, 0, 0) 48%);
                 pointer-events: none;
             }
 
@@ -1060,7 +1447,7 @@ def _aplicar_estilo_preto_dourado() -> None:
                 position: relative;
                 z-index: 1;
                 margin-top: 0.35rem;
-                color: #e2e2e2;
+                color: #d6e2fb;
                 font-size: 0.95rem;
                 max-width: 74ch;
             }
@@ -1078,24 +1465,24 @@ def _aplicar_estilo_preto_dourado() -> None:
                 display: inline-flex;
                 align-items: center;
                 border-radius: 999px;
-                border: 1px solid rgba(216, 171, 73, 0.45);
-                background: rgba(255, 224, 139, 0.08);
-                color: #ffe9b4;
+                border: 1px solid rgba(104, 153, 235, 0.56);
+                background: rgba(63, 108, 194, 0.2);
+                color: #deebff;
                 font-size: 0.8rem;
                 letter-spacing: 0.15px;
                 padding: 0.24rem 0.62rem;
             }
 
             .hero-chip.status-ok {
-                border-color: rgba(115, 196, 138, 0.7);
-                background: rgba(89, 180, 112, 0.14);
-                color: #c8ffd6;
+                border-color: rgba(113, 168, 245, 0.78);
+                background: rgba(67, 121, 218, 0.3);
+                color: #e8f3ff;
             }
 
             .hero-chip.status-warn {
-                border-color: rgba(232, 150, 65, 0.7);
-                background: rgba(232, 150, 65, 0.15);
-                color: #ffd8ac;
+                border-color: rgba(232, 187, 92, 0.78);
+                background: rgba(216, 171, 73, 0.22);
+                color: #ffe5af;
             }
 
             .secao-titulo {
@@ -1134,8 +1521,8 @@ def _aplicar_estilo_preto_dourado() -> None:
             div[data-baseweb="input"] > div,
             div[data-baseweb="textarea"] > div,
             div[data-baseweb="select"] > div {
-                background-color: #232323;
-                border: 1px solid #725c2a;
+                background-color: #162746;
+                border: 1px solid #3b5f9f;
                 border-radius: 12px;
                 min-height: 44px;
                 transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
@@ -1144,8 +1531,8 @@ def _aplicar_estilo_preto_dourado() -> None:
             div[data-baseweb="input"] > div:focus-within,
             div[data-baseweb="textarea"] > div:focus-within,
             div[data-baseweb="select"] > div:focus-within {
-                border-color: #d8ab49;
-                box-shadow: 0 0 0 1px #d8ab49, 0 0 0 4px rgba(216, 171, 73, 0.16);
+                border-color: #e2b961;
+                box-shadow: 0 0 0 1px #e2b961, 0 0 0 4px rgba(216, 171, 73, 0.18);
                 transform: translateY(-1px);
             }
 
@@ -1159,47 +1546,90 @@ def _aplicar_estilo_preto_dourado() -> None:
             }
 
             input::placeholder, textarea::placeholder {
-                color: #b3b3b3 !important;
+                color: #a6badf !important;
             }
 
             div[data-testid="stMultiSelect"] span[data-baseweb="tag"] {
-                background-color: rgba(216, 171, 73, 0.14);
-                border: 1px solid rgba(216, 171, 73, 0.5);
-                color: #f5dc9c;
+                background-color: rgba(62, 107, 193, 0.32);
+                border: 1px solid rgba(216, 171, 73, 0.58);
+                color: #e9f1ff;
             }
 
             div[data-testid="stButton"] > button,
             div[data-testid="stFormSubmitButton"] > button,
             div[data-testid="stDownloadButton"] > button {
-                background: linear-gradient(135deg, #d0a64b, #f6dea6);
-                color: #1d1502 !important;
-                font-weight: 700;
-                border: 1px solid rgba(255, 230, 166, 0.45);
+                background:
+                    radial-gradient(circle at 18% 15%, rgba(255, 239, 196, 0.32), rgba(255, 239, 196, 0) 44%),
+                    linear-gradient(160deg, #2352ab 0%, #163d85 52%, #0f2b64 100%);
+                color: #f8e5b1 !important;
+                font-weight: 740;
+                border: 1px solid rgba(235, 193, 101, 0.72);
                 border-radius: 999px;
-                padding: 0.58rem 1.32rem;
-                box-shadow: 0 10px 22px rgba(0, 0, 0, 0.34);
-                transition: transform .18s ease, filter .18s ease, box-shadow .18s ease;
+                padding: 0.58rem 1.36rem;
+                box-shadow:
+                    inset 0 1px 0 rgba(221, 236, 255, 0.38),
+                    0 10px 24px rgba(0, 0, 0, 0.45),
+                    0 0 0 1px rgba(28, 69, 145, 0.5);
+                transition: transform .16s ease, filter .16s ease, box-shadow .16s ease, border-color .16s ease;
             }
 
             div[data-testid="stButton"] > button:hover,
             div[data-testid="stFormSubmitButton"] > button:hover,
             div[data-testid="stDownloadButton"] > button:hover {
-                filter: brightness(1.03);
-                transform: translateY(-2px);
-                box-shadow: 0 14px 28px rgba(0, 0, 0, 0.38);
+                filter: brightness(1.09) saturate(1.12);
+                transform: translateY(-2px) scale(1.006);
+                border-color: rgba(244, 210, 134, 0.92);
+                box-shadow:
+                    inset 0 1px 0 rgba(229, 240, 255, 0.46),
+                    0 14px 30px rgba(0, 0, 0, 0.52),
+                    0 0 0 1px rgba(236, 194, 102, 0.36),
+                    0 0 18px rgba(74, 123, 210, 0.35);
+            }
+
+            div[data-testid="stButton"] > button:focus-visible,
+            div[data-testid="stFormSubmitButton"] > button:focus-visible,
+            div[data-testid="stDownloadButton"] > button:focus-visible {
+                outline: none;
+                box-shadow:
+                    inset 0 1px 0 rgba(229, 240, 255, 0.5),
+                    0 0 0 2px rgba(242, 208, 128, 0.95),
+                    0 0 0 6px rgba(76, 128, 217, 0.32),
+                    0 12px 28px rgba(0, 0, 0, 0.5);
+            }
+
+            div[data-testid="stButton"] > button:disabled,
+            div[data-testid="stFormSubmitButton"] > button:disabled,
+            div[data-testid="stDownloadButton"] > button:disabled {
+                opacity: 0.56;
+                filter: grayscale(0.24) brightness(0.96);
+                cursor: not-allowed;
+                box-shadow: 0 6px 12px rgba(0, 0, 0, 0.28);
             }
 
             div[data-testid="stAlert"] {
                 border-radius: 12px;
-                border: 1px solid rgba(216, 171, 73, 0.35);
+                border: 1px solid rgba(108, 157, 236, 0.42);
+            }
+
+            div[data-testid="stProgress"] > div > div {
+                background-color: rgba(52, 78, 124, 0.44);
+                border: 1px solid rgba(95, 142, 222, 0.34);
+                border-radius: 999px;
+                overflow: hidden;
+            }
+
+            div[data-testid="stProgress"] > div > div > div {
+                background: linear-gradient(90deg, #e6bb66 0%, #5f93e8 48%, #2f64be 100%) !important;
+                box-shadow: 0 0 12px rgba(216, 171, 73, 0.3);
+                border-radius: 999px;
             }
 
             .preview-bloco {
                 margin-top: 1.25rem;
                 margin-bottom: 0.5rem;
                 border-radius: 14px;
-                border: 1px solid rgba(216, 171, 73, 0.34);
-                background: linear-gradient(180deg, rgba(38, 38, 38, 0.88), rgba(22, 22, 22, 0.9));
+                border: 1px solid rgba(216, 171, 73, 0.4);
+                background: linear-gradient(180deg, rgba(24, 43, 82, 0.9), rgba(11, 23, 46, 0.92));
                 padding: 0.62rem 0.85rem;
                 color: #f6dea6;
                 font-weight: 650;
@@ -1274,16 +1704,82 @@ def _titulo_secao(texto: str) -> None:
     )
 
 
+ # Renderiza o campo "Tipo da ação" com sugestões por área e opção de texto livre.
+def _renderizar_campo_tipo_acao(area_direito: str) -> None:
+    opcoes_area = TIPOS_ACAO_POR_AREA.get(area_direito, TIPOS_ACAO_POR_AREA["Outro"])
+    kwargs_select: dict[str, Any] = {
+        "label": "Tipo da ação *",
+        "options": opcoes_area,
+        "key": "tipo_acao",
+        "placeholder": "Selecione ou digite para buscar/criar...",
+        "accept_new_options": True,
+        "help": "Escolha uma sugestão da área ou digite livremente.",
+    }
+    if "tipo_acao" not in st.session_state:
+        kwargs_select["index"] = None
+    st.selectbox(**kwargs_select)
+
+
+ # Renderiza o campo "Rito/procedimento" com sugestões por área e opção de texto livre.
+def _renderizar_campo_rito(area_direito: str) -> None:
+    opcoes_rito = RITOS_POR_AREA.get(area_direito, RITOS_POR_AREA["Outro"])
+    kwargs_select: dict[str, Any] = {
+        "label": "Rito/Procedimento",
+        "options": opcoes_rito,
+        "key": "rito",
+        "placeholder": "Selecione ou digite para buscar/criar...",
+        "accept_new_options": True,
+        "help": "Escolha uma sugestão da área ou digite livremente.",
+    }
+    if "rito" not in st.session_state:
+        kwargs_select["index"] = None
+    st.selectbox(**kwargs_select)
+
+
+ # Retorna uma sugestão de foro/competência com base na área e rito escolhidos.
+def _sugerir_foro_competente(area_direito: str, rito: str) -> str:
+    area = (area_direito or "").strip()
+    rito_norm = (rito or "").casefold()
+
+    if area == "Previdenciário":
+        if "juizado especial federal" in rito_norm:
+            return "Sugestão de competência: Juizado Especial Federal (JEF), se cabível."
+        return "Sugestão de competência: Justiça Federal (vara federal/previdenciária), salvo competência delegada."
+
+    if area == "Direito da Saúde":
+        return "Sugestão de competência: Vara Cível (plano/hospital privado) ou Vara da Fazenda Pública (SUS/ente público)."
+
+    return ""
+
+
+ # Aplica sugestões automáticas que reduzem erro de preenchimento sem impor campos.
+def _aplicar_sugestoes_inteligentes(area_direito: str) -> None:
+    if area_direito != "Direito da Saúde":
+        return
+
+    chave_urgencia = _chave_campo_area("Direito da Saude", "urgencia_laudo")
+    urgencia_preenchida = bool(str(st.session_state.get(chave_urgencia, "")).strip())
+    if not urgencia_preenchida:
+        return
+
+    # Autoativa uma vez quando há urgência informada; usuário pode desmarcar depois.
+    if "tem_tutela_urgencia" not in st.session_state:
+        st.session_state["tem_tutela_urgencia"] = True
+
+
 load_dotenv()
 
 st.set_page_config(page_title="Gerador de Peticao Inicial (Gemini)", layout="wide")
 _aplicar_estilo_preto_dourado()
 _restaurar_snapshot_formulario()
+if st.session_state.get("area_direito") not in AREAS_DIREITO:
+    st.session_state["area_direito"] = AREAS_DIREITO[0]
 
 api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 etapa_atual, etapa_idx = _menu_fluxo_lateral()
 area_selecionada = st.session_state.get("area_direito", AREAS_DIREITO[0])
+_aplicar_sugestoes_inteligentes(area_selecionada)
 _render_cabecalho_moderno(area=area_selecionada, modelo=gemini_model, api_configurada=bool(api_key))
 if not api_key:
     st.warning("Configure sua chave no .env (GEMINI_API_KEY ou GOOGLE_API_KEY) antes de gerar.")
@@ -1303,19 +1799,24 @@ with st.container(border=True):
 
     if etapa_atual == "Contexto Processual":
         _titulo_secao("1) Contexto Processual")
-        st.caption(f"Área selecionada: {area_selecionada}")
-        ctx1, ctx2 = st.columns(2)
+        
+        sugestao_foro = _sugerir_foro_competente(area_selecionada, str(st.session_state.get("rito", "")))
+        foro_placeholder = "Ex.: Juizado Especial Federal" if area_selecionada == "Previdenciário" else "Ex.: Vara Cível / Fazenda Pública"
 
+        ctx1, ctx2 = st.columns(2)
         with ctx1:
-            st.text_input("Tipo da ação *", key="tipo_acao", placeholder="Ex.: Revisional de contrato")
+            _renderizar_campo_tipo_acao(area_selecionada)
         with ctx2:
-            st.selectbox("Rito/Procedimento", RITOS_PROCESSUAIS, key="rito")
+            st.text_input("Comarca / UF *", key="comarca_uf", placeholder="Ex.: São Paulo/SP")
 
         ctx3, ctx4 = st.columns(2)
         with ctx3:
-            st.text_input("Comarca / UF *", key="comarca_uf", placeholder="Ex.: São Paulo/SP")
+            _renderizar_campo_rito(area_selecionada)
         with ctx4:
-            st.text_input("Foro / Vara (opcional)", key="foro_vara", placeholder="Ex.: 2ª Vara Cível")
+            st.text_input("Foro / Vara (opcional)", key="foro_vara", placeholder=foro_placeholder)
+
+        if sugestao_foro:
+            st.caption(sugestao_foro)
 
     elif etapa_atual == "Campos da Área":
         _titulo_secao("2) Campos Específicos da Área")
@@ -1323,50 +1824,185 @@ with st.container(border=True):
 
     elif etapa_atual == "Partes":
         _titulo_secao("3) Partes")
+
         col1, col2 = st.columns(2)
 
         with col1:
             st.subheader("Autor")
-            st.text_input("Nome *", key="autor_nome", placeholder="Ex.: Maria da Silva")
+            _renderizar_tipo_pessoa_parte("autor", area_selecionada)
+            autor_tipo = str(st.session_state.get("autor_tipo_pessoa", "Pessoa Física"))
+            autor_label_nome = "Nome *" if autor_tipo == "Pessoa Física" else "Razão social *"
+            autor_label_doc = "CPF *" if autor_tipo == "Pessoa Física" else "CNPJ *"
+            autor_placeholder_nome = "Ex.: Maria da Silva" if autor_tipo == "Pessoa Física" else "Ex.: Empresa XYZ LTDA"
+
+            st.text_input(autor_label_nome, key="autor_nome", placeholder=autor_placeholder_nome)
             st.text_input(
-                "CPF/CNPJ *",
+                autor_label_doc,
                 key="autor_doc",
                 placeholder="000.000.000-00 ou 00.000.000/0000-00",
                 on_change=_aplicar_mascara_documento,
                 args=("autor_doc",),
             )
+            if autor_tipo == "Pessoa Jurídica":
+                st.button(
+                    "Buscar dados da PJ por CNPJ (BrasilAPI)",
+                    key="btn_buscar_cnpj_autor",
+                    on_click=_preencher_parte_com_cnpj,
+                    args=("autor",),
+                    use_container_width=True,
+                )
+                _exibir_feedback_cnpj("autor")
+            if autor_tipo == "Pessoa Física":
+                st.text_input(
+                    "CEP (opcional)",
+                    key="autor_cep",
+                    placeholder="00000-000",
+                    on_change=_aplicar_mascara_cep,
+                    args=("autor_cep",),
+                )
+                st.button(
+                    "Buscar endereço por CEP",
+                    key="btn_buscar_cep_autor",
+                    on_click=_preencher_endereco_por_cep,
+                    args=("autor",),
+                    use_container_width=True,
+                )
+                _exibir_feedback_cep("autor")
+            else:
+                st.caption("Para PJ, o CEP e o endereço podem ser preenchidos automaticamente pela consulta de CNPJ.")
             st.text_input(
                 "Endereço *",
                 key="autor_end",
                 placeholder="Rua, número, bairro, cidade/UF",
             )
+            if autor_tipo == "Pessoa Física":
+                aut_pf1, aut_pf2, aut_pf3 = st.columns(3)
+                with aut_pf1:
+                    st.text_input(
+                        "Nacionalidade (opcional)",
+                        key="autor_nacionalidade",
+                        placeholder="Ex.: Brasileira",
+                    )
+                with aut_pf2:
+                    st.text_input(
+                        "Estado civil (opcional)",
+                        key="autor_estado_civil",
+                        placeholder="Ex.: Solteira",
+                    )
+                with aut_pf3:
+                    st.text_input(
+                        "Profissão (opcional)",
+                        key="autor_profissao",
+                        placeholder="Ex.: Professora",
+                    )
+            else:
+                aut_pj1, aut_pj2 = st.columns(2)
+                with aut_pj1:
+                    st.text_input(
+                        "Natureza jurídica (opcional)",
+                        key="autor_natureza_juridica",
+                        placeholder="Ex.: Pessoa jurídica de direito privado",
+                    )
+                with aut_pj2:
+                    st.text_input(
+                        "Representante legal (opcional)",
+                        key="autor_representante_legal",
+                        placeholder="Ex.: João da Silva",
+                    )
             st.text_area(
-                "Qualificação adicional (opcional)",
+                "Qualificação complementar do autor (opcional)",
                 key="autor_qualificacao",
                 height=90,
-                placeholder="Profissão, estado civil, nacionalidade, e-mail etc.",
+                placeholder="Outras informações úteis de qualificação.",
             )
 
         with col2:
             st.subheader("Réu")
-            st.text_input("Nome / Razão social *", key="reu_nome", placeholder="Ex.: Empresa XYZ LTDA")
+            _renderizar_tipo_pessoa_parte("reu", area_selecionada)
+            reu_tipo = str(st.session_state.get("reu_tipo_pessoa", "Pessoa Jurídica"))
+            reu_label_nome = "Nome *" if reu_tipo == "Pessoa Física" else "Razão social / Ente público *"
+            reu_label_doc = "CPF *" if reu_tipo == "Pessoa Física" else "CNPJ *"
+            reu_placeholder_nome = "Ex.: João da Silva" if reu_tipo == "Pessoa Física" else "Ex.: INSS / Município de Goiânia / Plano XYZ"
+
+            st.text_input(reu_label_nome, key="reu_nome", placeholder=reu_placeholder_nome)
             st.text_input(
-                "CPF/CNPJ do réu *",
+                reu_label_doc,
                 key="reu_doc",
                 placeholder="000.000.000-00 ou 00.000.000/0000-00",
                 on_change=_aplicar_mascara_documento,
                 args=("reu_doc",),
             )
+            if reu_tipo == "Pessoa Jurídica":
+                st.button(
+                    "Buscar dados da PJ por CNPJ (BrasilAPI)",
+                    key="btn_buscar_cnpj_reu",
+                    on_click=_preencher_parte_com_cnpj,
+                    args=("reu",),
+                    use_container_width=True,
+                )
+                _exibir_feedback_cnpj("reu")
+            if reu_tipo == "Pessoa Física":
+                st.text_input(
+                    "CEP do réu (opcional)",
+                    key="reu_cep",
+                    placeholder="00000-000",
+                    on_change=_aplicar_mascara_cep,
+                    args=("reu_cep",),
+                )
+                st.button(
+                    "Buscar endereço do réu por CEP",
+                    key="btn_buscar_cep_reu",
+                    on_click=_preencher_endereco_por_cep,
+                    args=("reu",),
+                    use_container_width=True,
+                )
+                _exibir_feedback_cep("reu")
+            else:
+                st.caption("Para PJ, o CEP e o endereço podem ser preenchidos automaticamente pela consulta de CNPJ.")
             st.text_input(
                 "Endereço do réu *",
                 key="reu_end",
                 placeholder="Rua, número, bairro, cidade/UF",
             )
+            if reu_tipo == "Pessoa Física":
+                reu_pf1, reu_pf2, reu_pf3 = st.columns(3)
+                with reu_pf1:
+                    st.text_input(
+                        "Nacionalidade (opcional)",
+                        key="reu_nacionalidade",
+                        placeholder="Ex.: Brasileira",
+                    )
+                with reu_pf2:
+                    st.text_input(
+                        "Estado civil (opcional)",
+                        key="reu_estado_civil",
+                        placeholder="Ex.: Casado",
+                    )
+                with reu_pf3:
+                    st.text_input(
+                        "Profissão (opcional)",
+                        key="reu_profissao",
+                        placeholder="Ex.: Comerciante",
+                    )
+            else:
+                reu_pj1, reu_pj2 = st.columns(2)
+                with reu_pj1:
+                    st.text_input(
+                        "Natureza jurídica (opcional)",
+                        key="reu_natureza_juridica",
+                        placeholder="Ex.: Autarquia federal / Pessoa jurídica de direito privado / Pessoa jurídica de direito público",
+                    )
+                with reu_pj2:
+                    st.text_input(
+                        "Representante legal (opcional)",
+                        key="reu_representante_legal",
+                        placeholder="Ex.: Procuradoria Federal Especializada / Prefeito Municipal / Diretor",
+                    )
             st.text_area(
-                "Qualificação adicional do réu (opcional)",
+                "Qualificação complementar do réu (opcional)",
                 key="reu_qualificacao",
                 height=90,
-                placeholder="Dados empresariais, representação, e-mail etc.",
+                placeholder="Outras informações úteis de qualificação.",
             )
 
         st.text_area(
@@ -1390,8 +2026,15 @@ with st.container(border=True):
             height=100,
             placeholder="Ex.: 10/01/2026 - Contrato assinado",
         )
+        provas_sugeridas_area = PROVAS_SUGERIDAS_POR_AREA.get(area_selecionada, PROVAS_SUGERIDAS_POR_AREA["Outro"])
+        st.multiselect(
+            "Provas sugeridas para esta área",
+            provas_sugeridas_area,
+            key="provas_sugeridas",
+            help="Selecione as provas já disponíveis no caso.",
+        )
         st.text_area(
-            "Documentos e provas (opcional, um item por linha)",
+            "Documentos e provas adicionais (opcional, um item por linha)",
             key="provas_raw",
             height=100,
             placeholder="Ex.: Contrato, comprovantes de pagamento, trocas de e-mail",
@@ -1480,6 +2123,14 @@ with st.container(border=True):
             st.checkbox("Incluir pedido de justiça gratuita", key="tem_gratuidade")
             st.checkbox("Incluir prioridade de tramitação", key="tem_prioridade")
             st.checkbox("Manifestar interesse em audiência de conciliação", key="quer_audiencia", value=True)
+            if area_selecionada == "Direito da Saúde":
+                chave_urgencia = _chave_campo_area("Direito da Saude", "urgencia_laudo")
+                urgencia_laudo = str(st.session_state.get(chave_urgencia, "")).strip()
+                if urgencia_laudo and not st.session_state.get("tem_tutela_urgencia", False):
+                    st.info("Há urgência médica informada. Sugestão: incluir pedido de tutela de urgência.")
+                    if st.button("Aplicar sugestão de tutela", key="btn_aplicar_sugestao_tutela"):
+                        st.session_state["tem_tutela_urgencia"] = True
+                        st.rerun()
 
         st.text_area(
             "Observações estratégicas para a redação (opcional)",
@@ -1487,6 +2138,28 @@ with st.container(border=True):
             height=100,
             placeholder="Diretrizes de linguagem, foco, riscos e pontos sensíveis.",
         )
+
+        st.markdown("#### Dados do Advogado (para o fechamento da peça)")
+        adv1, adv2, adv3 = st.columns([2, 1, 1])
+        with adv1:
+            st.text_input(
+                "Nome do advogado(a)",
+                key="advogado_nome",
+                placeholder="Ex.: João da Silva",
+            )
+        with adv2:
+            st.text_input(
+                "OAB/UF",
+                key="advogado_oab_uf",
+                placeholder="Ex.: SP",
+                max_chars=2,
+            )
+        with adv3:
+            st.text_input(
+                "Número da OAB",
+                key="advogado_oab_num",
+                placeholder="Ex.: 123456",
+            )
 
     if etapa_atual == "Finalização e Geração":
         nav1, nav2 = st.columns(2)
@@ -1521,7 +2194,6 @@ if avancar_etapa:
 
 if gerar:
     _restaurar_snapshot_formulario()
-    _aplicar_mascaras_formulario()
     faltantes_geracao = _validar_essenciais_para_geracao()
     if faltantes_geracao:
         itens = "\n".join(f"- {item}" for item in faltantes_geracao)
@@ -1543,15 +2215,29 @@ if st.session_state.peticao_texto:
     st.markdown('<div class="preview-bloco">Prévia da petição gerada</div>', unsafe_allow_html=True)
     st.text_area("Texto gerado", st.session_state.peticao_texto, height=420)
     nome_arquivo_docx = _nome_arquivo_docx(st.session_state.get("autor_nome", ""))
+    nome_arquivo_pdf = _nome_arquivo_pdf(st.session_state.get("autor_nome", ""))
 
     docx_bytes = texto_para_docx_bytes(
         titulo="PETICAO INICIAL",
         texto=st.session_state.peticao_texto,
     )
-
-    st.download_button(
-        "Baixar .docx",
-        data=docx_bytes,
-        file_name=nome_arquivo_docx,
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    pdf_bytes = texto_para_pdf_bytes(
+        titulo="PETICAO INICIAL",
+        texto=st.session_state.peticao_texto,
     )
+
+    down1, down2 = st.columns(2)
+    with down1:
+        st.download_button(
+            "Baixar .docx",
+            data=docx_bytes,
+            file_name=nome_arquivo_docx,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    with down2:
+        st.download_button(
+            "Baixar .pdf",
+            data=pdf_bytes,
+            file_name=nome_arquivo_pdf,
+            mime="application/pdf",
+        )

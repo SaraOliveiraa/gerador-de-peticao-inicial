@@ -35,7 +35,10 @@ ESTRUTURA BASE MINIMA (sempre presente):
 8. FECHAMENTO:
    "Termos em que, pede deferimento."
    Local e data: [PREENCHER]
-   Assinatura e OAB: [PREENCHER]
+   Assinatura:
+   {advogado.nome}
+   OAB/{advogado.oab_uf} {advogado.oab_num}
+   Se faltar dado, use [PREENCHER].
 
 REGRAS DE ADAPTACAO:
 - Se houver secoes personalizadas em `estrutura_peticao`, priorize a ordem indicada.
@@ -44,6 +47,9 @@ REGRAS DE ADAPTACAO:
 - Use os pedidos de `pedidos` e `pedidos_detalhados` sem criar pedidos nao informados.
 - Considere os parametros finais (gratuidade, prioridade, audiencia) apenas quando informados.
 - Trate `campos_area_especificos` como fonte prioritaria para especificidade tecnica da area do direito selecionada.
+- Em casos de saude, tratar tutela de urgencia e astreintes apenas quando informadas; sem parametro, usar [PREENCHER].
+- Em casos previdenciarios, nunca inventar DER/DIB/CNIS; se o rito indicar JEF, use linguagem mais objetiva e direta.
+- No FECHAMENTO, usar prioritariamente os dados de `advogado` vindos no JSON.
 """.strip()
 
 
@@ -148,6 +154,14 @@ FOCO DA AREA: TRABALHISTA
 FOCO DA AREA: PREVIDENCIARIO
 - Delimitar com precisao o beneficio e os requisitos informados.
 - Evitar inferencias tecnicas (DER/DIB/carencia) sem dados objetivos.
+- Se o rito for JEF, manter redacao mais objetiva, sem perder formalidade.
+""".strip(),
+    "Direito da Saude": """
+FOCO DA AREA: DIREITO DA SAUDE
+- Delimitar pedido de cobertura/fornecimento a partir de prescricao, laudos e negativa informados.
+- Se houver urgencia clinica, estruturar tutela de urgencia com base em risco de dano e probabilidade do direito.
+- Nao presumir procedimentos, CID, rede credenciada ou protocolos nao informados.
+- Tratar prazo de cumprimento e astreintes apenas quando houver dado; se faltar, usar [PREENCHER].
 """.strip(),
     "Tributario": """
 FOCO DA AREA: TRIBUTARIO
@@ -175,8 +189,58 @@ FOCO DA AREA: GENERICO
 """.strip(),
 }
 
+GUIA_POR_AREA: dict[str, str] = {
+    "Previdenciario": """
+FOCO DA AREA: PREVIDENCIARIO (INSS / JUSTICA FEDERAL)
+- Nao inventar CNIS, DER, DIB, tempo de contribuicao, carencia, datas de requerimento, indeferimento ou laudos.
+- Se houver "beneficio_pretendido", "nb_ou_requerimento", "der_dib", usar exatamente como informado.
+- Se o rito for JEF, manter redacao mais objetiva e direta, com pedidos claros e valor da causa coerente (sem inventar).
+- Em beneficios por incapacidade: descrever incapacidade somente conforme laudo/relatorio informado.
+""".strip(),
+    "Direito da Saude": """
+FOCO DA AREA: DIREITO DA SAUDE (PLANO DE SAUDE OU SUS/ENTE PUBLICO)
+- Nao inventar diagnostico, CID, gravidade, urgencia, risco de vida, medicamentos, doses ou prazos sem base no caso.
+- Identificar se o reu e: PLANO DE SAUDE ou ENTE PUBLICO (SUS) conforme dados.
+- Se houver tutela de urgencia marcada, incluir "DA TUTELA DE URGENCIA" com base em urgencia/risco informados.
+- Astreintes (multa diaria) apenas se houver parametro; se faltar, usar [PREENCHER].
+- Provas: priorizar relatorio/laudo medico, prescricao, negativa formal, protocolos, orcamentos e notas (somente se informados).
+""".strip(),
+}
 
- # Normaliza texto para comparação tolerante (sem acentos, minúsculo e espaços ajustados).
+GUIA_PREVIDENCIARIO_POR_BENEFICIO: dict[str, str] = {
+    "Auxilio-doenca": """
+SUBFOCO: BENEFICIO POR INCAPACIDADE (AUXILIO-DOENCA)
+- Descrever incapacidade e recomendacao somente conforme laudos/relatorios informados.
+- Se houver indeferimento administrativo, narrar motivo somente se informado.
+""".strip(),
+    "BPC/LOAS": """
+SUBFOCO: BPC/LOAS
+- Nao inventar renda per capita, composicao familiar, gastos ou condicao social.
+- Se faltarem dados socioeconomicos, marcar [PREENCHER].
+""".strip(),
+    "Aposentadoria por idade": """
+SUBFOCO: APOSENTADORIA POR IDADE
+- Nao inventar idade, contribuicoes, carencia, DER/DIB.
+- Se faltar qualquer elemento de tempo de contribuicao, marcar [PREENCHER].
+""".strip(),
+}
+
+GUIA_SAUDE_POR_REU: dict[str, str] = {
+    "Plano de saude": """
+SUBFOCO: PLANO DE SAUDE
+- Organizar: contrato/plano -> indicacao medica -> negativa e motivo -> necessidade/urgencia -> pedidos (cobertura, reembolso se houver, danos morais se constar).
+- Nao citar rol/ANS/artigos especificos se nao foram fornecidos; usar fundamentacao generica e segura.
+""".strip(),
+    "SUS": """
+SUBFOCO: SUS / ENTE PUBLICO
+- Destacar dever estatal de garantir tratamento conforme fatos.
+- Se envolver medicamento/terapia: indicar que ha prescricao/relatorio (se informado).
+- Nao inventar protocolos clinicos, listas oficiais, falta de estoque ou negativas sem prova informada.
+""".strip(),
+}
+
+
+ # Normaliza texto para comparacao tolerante (sem acentos, minusculo e espacos ajustados).
 def _normalizar_texto(valor: Any) -> str:
     texto = str(valor or "").strip()
     if not texto:
@@ -186,7 +250,7 @@ def _normalizar_texto(valor: Any) -> str:
     return re.sub(r"\s+", " ", texto).strip().lower()
 
 
- # Navega por um caminho de chaves em dicionário e retorna valor padrão quando não existir.
+ # Navega por um caminho de chaves em dicionario e retorna valor padrao quando nao existir.
 def _valor_caminho(dados: dict[str, Any], *caminho: str, default: Any = "") -> Any:
     atual: Any = dados
     for chave in caminho:
@@ -198,7 +262,7 @@ def _valor_caminho(dados: dict[str, Any], *caminho: str, default: Any = "") -> A
     return atual
 
 
- # Retorna o primeiro texto não vazio dentre múltiplos candidatos.
+ # Retorna o primeiro texto nao vazio dentre multiplos candidatos.
 def _primeiro_texto(*valores: Any) -> str:
     for valor in valores:
         texto = str(valor or "").strip()
@@ -240,7 +304,7 @@ def _coletar_lista(valor: Any) -> list[str]:
     return itens
 
 
- # Identifica o tipo de ação a partir dos campos possíveis do payload.
+ # Identifica o tipo de acao a partir dos campos possiveis do payload.
 def _coletar_tipo_acao(dados: dict[str, Any]) -> str:
     return _primeiro_texto(
         _valor_caminho(dados, "tipo_acao", default=""),
@@ -251,7 +315,7 @@ def _coletar_tipo_acao(dados: dict[str, Any]) -> str:
     )
 
 
- # Normaliza o tipo de ação para um rótulo conhecido pelo guia de prompts.
+ # Normaliza o tipo de acao para um rotulo conhecido pelo guia de prompts.
 def _normalize_tipo_acao(tipo: str | None) -> str:
     if not tipo:
         return "Outro"
@@ -264,6 +328,12 @@ def _normalize_tipo_acao(tipo: str | None) -> str:
         (("indeniz", "moral"), "Indenizacao por danos morais"),
         (("cobranc",), "Cobranca"),
         (("obrigacao", "fazer"), "Obrigacao de fazer"),
+        (("fornec", "medic"), "Obrigacao de fazer"),
+        (("cobertur",), "Obrigacao de fazer"),
+        (("home care",), "Obrigacao de fazer"),
+        (("intern", "uti"), "Obrigacao de fazer"),
+        (("tutela", "urgenc"), "Obrigacao de fazer"),
+        (("reembolso",), "Cobranca"),
         (("rescis", "contrat"), "Rescisao contratual"),
         (("aliment",), "Alimentos"),
         (("guarda",), "Guarda e convivencia"),
@@ -274,6 +344,9 @@ def _normalize_tipo_acao(tipo: str | None) -> str:
         (("trabalh", "rescis"), "Trabalhista - verbas rescisorias"),
         (("rescisor",), "Trabalhista - verbas rescisorias"),
         (("previd",), "Previdenciaria - concessao/revisao"),
+        (("concess", "benef"), "Previdenciaria - concessao/revisao"),
+        (("restabelec", "benef"), "Previdenciaria - concessao/revisao"),
+        (("revisa", "benef"), "Previdenciaria - concessao/revisao"),
         (("aposent",), "Previdenciaria - concessao/revisao"),
         (("auxilio",), "Previdenciaria - concessao/revisao"),
         (("pensao",), "Previdenciaria - concessao/revisao"),
@@ -293,7 +366,7 @@ def _normalize_tipo_acao(tipo: str | None) -> str:
     return "Outro"
 
 
- # Extrai a área do direito considerando diferentes posições no payload.
+ # Extrai a area do direito considerando diferentes posicoes no payload.
 def _coletar_area_direito(dados: dict[str, Any]) -> str:
     return _primeiro_texto(
         _valor_caminho(dados, "contexto_processual", "area_direito", default=""),
@@ -302,7 +375,67 @@ def _coletar_area_direito(dados: dict[str, Any]) -> str:
     )
 
 
- # Normaliza a área do direito para os rótulos suportados internamente.
+def _coletar_area(dados: dict[str, Any]) -> str:
+    return str(_valor_caminho(dados, "contexto_processual", "area_direito", default="")).strip()
+
+
+def _coletar_beneficio_previdenciario(dados: dict[str, Any]) -> str:
+    valores = _valor_caminho(dados, "campos_area_especificos", "valores", default={})
+    if isinstance(valores, dict):
+        return str(valores.get("beneficio_pretendido", "")).strip()
+    return ""
+
+
+def _coletar_reu_saude(dados: dict[str, Any]) -> str:
+    valores = _valor_caminho(dados, "campos_area_especificos", "valores", default={})
+    if not isinstance(valores, dict):
+        return ""
+
+    reu_tipo = str(valores.get("reu_tipo_saude", "")).strip()
+    if reu_tipo:
+        return reu_tipo
+
+    return str(valores.get("natureza_relacao_juridica", "")).strip()
+
+
+def _resolver_area_para_guia(area: str) -> str:
+    chave = _normalizar_texto(area)
+    if "previd" in chave:
+        return "Previdenciario"
+    if "saud" in chave:
+        return "Direito da Saude"
+    return area
+
+
+def _resolver_guia_previdenciario_por_beneficio(beneficio: str) -> str:
+    chave = _normalizar_texto(beneficio)
+    if not chave:
+        return ""
+
+    if "bpc" in chave or "loas" in chave:
+        return GUIA_PREVIDENCIARIO_POR_BENEFICIO.get("BPC/LOAS", "")
+    if "aposentadoria" in chave and "idade" in chave:
+        return GUIA_PREVIDENCIARIO_POR_BENEFICIO.get("Aposentadoria por idade", "")
+    if "auxilio" in chave or "incapacidade" in chave or "doenca" in chave:
+        return GUIA_PREVIDENCIARIO_POR_BENEFICIO.get("Auxilio-doenca", "")
+
+    return ""
+
+
+def _resolver_guia_saude_por_reu(reu_saude: str) -> str:
+    chave = _normalizar_texto(reu_saude)
+    if not chave:
+        return ""
+
+    if "plano" in chave:
+        return GUIA_SAUDE_POR_REU.get("Plano de saude", "")
+    if any(texto in chave for texto in ("municip", "estado", "uniao", "sus", "ente publico")):
+        return GUIA_SAUDE_POR_REU.get("SUS", "")
+
+    return ""
+
+
+ # Normaliza a area do direito para os rotulos suportados internamente.
 def _normalize_area_direito(area: str | None) -> str:
     if not area:
         return "Outro"
@@ -320,6 +453,7 @@ def _normalize_area_direito(area: str | None) -> str:
         (("consum",), "Consumidor"),
         (("trabalh",), "Trabalhista"),
         (("previd",), "Previdenciario"),
+        (("saud",), "Direito da Saude"),
         (("tribut",), "Tributario"),
         (("empres",), "Empresarial"),
         (("famil",), "Familia e Sucessoes"),
@@ -333,16 +467,17 @@ def _normalize_area_direito(area: str | None) -> str:
     return "Outro"
 
 
- # Define um tipo de ação padrão quando ele não vem explícito, com base na área.
+ # Define um tipo de acao padrao quando ele nao vem explicito, com base na area.
 def _inferir_tipo_acao_por_area(area_norm: str) -> str:
     mapa = {
         "Trabalhista": "Trabalhista - verbas rescisorias",
         "Previdenciario": "Previdenciaria - concessao/revisao",
+        "Direito da Saude": "Obrigacao de fazer",
     }
     return mapa.get(area_norm, "Outro")
 
 
- # Converte valores variados para booleano de forma previsível.
+ # Converte valores variados para booleano de forma previsivel.
 def _to_bool(valor: Any) -> bool:
     if isinstance(valor, bool):
         return valor
@@ -353,14 +488,14 @@ def _to_bool(valor: Any) -> bool:
     return False
 
 
- # Formata listas em string única para leitura no bloco de personalização.
+ # Formata listas em string unica para leitura no bloco de personalizacao.
 def _formatar_lista(itens: list[str], fallback: str) -> str:
     if not itens:
         return fallback
     return " | ".join(itens)
 
 
- # Resume os campos específicos da área em pares "rótulo: valor".
+ # Resume os campos especificos da area em pares "rotulo: valor".
 def _resumir_campos_area(campos_area: Any) -> tuple[str, str]:
     if not isinstance(campos_area, dict):
         return "", "nenhum informado"
@@ -390,7 +525,7 @@ def _resumir_campos_area(campos_area: Any) -> tuple[str, str]:
     return area, _formatar_lista(pares, "nenhum informado")
 
 
- # Monta o bloco textual de personalização do caso para orientar a IA.
+ # Monta o bloco textual de personalizacao do caso para orientar a IA.
 def _montar_bloco_personalizacao(dados: dict[str, Any], tipo_raw: str, tipo_norm: str) -> str:
     area = _primeiro_texto(
         _valor_caminho(dados, "contexto_processual", "area_direito", default=""),
@@ -449,15 +584,45 @@ def _montar_bloco_personalizacao(dados: dict[str, Any], tipo_raw: str, tipo_norm
     area_campos, resumo_campos_area = _resumir_campos_area(
         _valor_caminho(dados, "campos_area_especificos", default={})
     )
+    partes = _valor_caminho(dados, "partes", default={})
+    if not isinstance(partes, dict):
+        partes = {}
+
+    autor_info = partes.get("autor", {})
+    if not isinstance(autor_info, dict):
+        autor_info = {}
+    reu_info = partes.get("reu", {})
+    if not isinstance(reu_info, dict):
+        reu_info = {}
+
+    autor_tipo_pessoa = _primeiro_texto(
+        autor_info.get("tipo_pessoa", ""),
+        _valor_caminho(dados, "autor", "tipo_pessoa", default=""),
+    )
+    reu_tipo_pessoa = _primeiro_texto(
+        reu_info.get("tipo_pessoa", ""),
+        _valor_caminho(dados, "reu", "tipo_pessoa", default=""),
+    )
+
+    advogado = _valor_caminho(dados, "advogado", default={})
+    if not isinstance(advogado, dict):
+        advogado = {}
+
+    advogado_nome = _primeiro_texto(advogado.get("nome", ""))
+    advogado_oab_uf = _primeiro_texto(advogado.get("oab_uf", ""))
+    advogado_oab_num = _primeiro_texto(advogado.get("oab_num", ""))
 
     linhas = [
         f"- Tipo de acao informado: {tipo_raw or '[PREENCHER]'}",
         f"- Tipo de acao classificado para orientacao: {tipo_norm}",
         f"- Area do direito: {area or '[PREENCHER]'}",
         f"- Campos especificos da area ({area_campos or area or '[PREENCHER]'}): {resumo_campos_area}",
+        f"- Tipo de pessoa da parte autora: {autor_tipo_pessoa or '[PREENCHER]'}",
+        f"- Tipo de pessoa da parte re: {reu_tipo_pessoa or '[PREENCHER]'}",
         f"- Rito/procedimento: {rito or '[PREENCHER]'}",
         f"- Comarca: {comarca or '[PREENCHER]'}",
         f"- Foro/vara: {foro_vara or '[PREENCHER]'}",
+        f"- Advogado para fechamento: nome={advogado_nome or '[PREENCHER]'} | OAB/UF={advogado_oab_uf or '[PREENCHER]'} | OAB numero={advogado_oab_num or '[PREENCHER]'}",
         f"- Nivel de detalhamento desejado: {nivel_detalhamento}",
         f"- Ordem de secoes sugeridas: {_formatar_lista(secoes_sugeridas, 'usar estrutura base minima')}",
         f"- Secoes extras solicitadas: {_formatar_lista(secoes_extras, 'nenhuma')}",
@@ -477,7 +642,7 @@ def _montar_bloco_personalizacao(dados: dict[str, Any], tipo_raw: str, tipo_norm
     return "\n".join(linhas)
 
 
- # Constrói o prompt final, combinando regras base, guias e dados do caso.
+ # Constroi o prompt final, combinando regras base, guias e dados do caso.
 def montar_prompt(dados: dict[str, Any]) -> str:
     dados = dados if isinstance(dados, dict) else {}
 
@@ -491,16 +656,31 @@ def montar_prompt(dados: dict[str, Any]) -> str:
         if tipo_inferido != "Outro":
             tipo_acao = tipo_inferido
 
+    area = _coletar_area(dados)
+    area_display = area or area_raw
+    area_guia = _resolver_area_para_guia(area or area_raw)
+    guia_area = GUIA_POR_AREA.get(area_guia, "")
+
+    guia_sub = ""
+    if area_guia == "Previdenciario":
+        beneficio = _coletar_beneficio_previdenciario(dados)
+        guia_sub = _resolver_guia_previdenciario_por_beneficio(beneficio)
+    elif area_guia == "Direito da Saude":
+        reu_saude = _coletar_reu_saude(dados)
+        guia_sub = _resolver_guia_saude_por_reu(reu_saude)
+
     guia = TIPO_ACAO_GUIDE.get(tipo_acao, TIPO_ACAO_GUIDE["Outro"])
-    guia_area = AREA_DIREITO_GUIDE.get(area_norm, AREA_DIREITO_GUIDE["Outro"])
     bloco_personalizacao = _montar_bloco_personalizacao(dados, tipo_acao_raw, tipo_acao)
 
     dados_json = json.dumps(dados, ensure_ascii=False, indent=2)
     return f"""{PROMPT_BASE}
 
-ORIENTACAO ESPECIFICA PELA AREA DO DIREITO:
-Area: {area_norm}
-{guia_area}
+GUIA POR AREA:
+Area: {area_display or '[PREENCHER]'}
+{guia_area or 'Nenhum guia especifico para a area.'}
+
+GUIA POR SUBTIPO (quando aplicavel):
+{guia_sub or 'Nenhum guia de subtipo aplicavel.'}
 
 ORIENTACAO ESPECIFICA PELO TIPO DE ACAO:
 Tipo: {tipo_acao}
@@ -518,19 +698,17 @@ Gere a peticao completa seguindo as regras criticas, a estrutura base minima e a
 CHECKLIST FINAL (auto-validacao antes de responder):
 - Nao inventar fatos/leis/documentos.
 - Usar [PREENCHER] quando faltar dado essencial.
-- Nao trocar dado existente por [PREENCHER].
-- Incluir apenas provas informadas ou formula generica "se cabivel" quando nao houver provas.
 - Pedidos enumerados e alinhados ao JSON.
 - Retornar somente o texto final da peticao (sem markdown e sem explicacoes adicionais).
 """
 
 
 # Backward-compatible aliases for earlier app versions.
- # Mantém compatibilidade com versões antigas que montam payload via kwargs.
+ # Mantem compatibilidade com versoes antigas que montam payload via kwargs.
 def build_case_payload(**kwargs: Any) -> dict[str, Any]:
     return dict(kwargs)
 
 
- # Mantém compatibilidade com versões antigas que chamam build_prompt.
+ # Mantem compatibilidade com versoes antigas que chamam build_prompt.
 def build_prompt(case_payload: dict[str, Any]) -> str:
     return montar_prompt(case_payload)
