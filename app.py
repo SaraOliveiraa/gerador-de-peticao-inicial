@@ -4,6 +4,8 @@ import os
 import re
 import html
 import json
+import io
+import hashlib
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -155,6 +157,9 @@ SECOES_SUGERIDAS = [
 
 NIVEIS_DETALHAMENTO = ["Enxuto", "Padrão", "Aprofundado"]
 TIPOS_PESSOA_OPCOES = ["Pessoa Física", "Pessoa Jurídica"]
+LIMITE_CARACTERES_MODELO_REFERENCIA = 12000
+MODO_PREENCHIMENTO_OPCOES = ["Essencial", "Completo"]
+PEDIDOS_PARAMETROS_FINAIS = ["Tutela de urgência", "Justiça gratuita"]
 
 ETAPAS_FLUXO = [
     "Contexto Processual",
@@ -168,6 +173,7 @@ ETAPAS_FLUXO = [
 
 CHAVES_FORMULARIO_BASE = [
     "area_direito",
+    "modo_preenchimento",
     "tipo_acao",
     "rito",
     "comarca_uf",
@@ -217,6 +223,9 @@ CHAVES_FORMULARIO_BASE = [
     "tem_prioridade",
     "quer_audiencia",
     "obs_estrategicas",
+    "modelo_referencia_nome",
+    "modelo_referencia_texto",
+    "modelo_referencia_truncado",
 ]
 
 CAMPOS_POR_AREA: dict[str, list[dict[str, Any]]] = {
@@ -470,6 +479,32 @@ def _mesclar_itens(*colecoes: list[str]) -> list[str]:
     return resultado
 
 
+ # Retorna o modo de preenchimento atual do formulario.
+def _modo_preenchimento() -> str:
+    valor = str(st.session_state.get("modo_preenchimento", "Essencial")).strip()
+    return valor if valor in MODO_PREENCHIMENTO_OPCOES else "Essencial"
+
+
+ # Indica se o modo essencial (enxuto) esta ativo.
+def _modo_essencial_ativo() -> bool:
+    return _modo_preenchimento() == "Essencial"
+
+
+ # Lista de pedidos base exibidos no formulario, sem os que ja possuem checkbox dedicado.
+def _pedidos_base_exibicao() -> list[str]:
+    return [pedido for pedido in PEDIDOS_BASE if pedido not in PEDIDOS_PARAMETROS_FINAIS]
+
+
+ # Adiciona automaticamente pedidos derivados dos parametros finais.
+def _incluir_pedidos_dos_parametros_finais(pedidos: list[str]) -> list[str]:
+    extras: list[str] = []
+    if st.session_state.get("tem_tutela_urgencia", False):
+        extras.append("Tutela de urgência")
+    if st.session_state.get("tem_gratuidade", False):
+        extras.append("Justiça gratuita")
+    return _mesclar_itens(pedidos, extras)
+
+
  # Gera um identificador simples e estável para uso em chaves de estado.
 def _slug(valor: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (valor or "").lower()).strip("_")
@@ -596,13 +631,55 @@ def _renderizar_campo_area(area: str, campo: dict[str, Any]) -> None:
     st.text_input(rotulo, key=chave, placeholder=placeholder, help=ajuda)
 
 
+ # Indica se o campo deve ocupar a linha inteira no bloco da area.
+def _campo_area_linha_inteira(campo: dict[str, Any]) -> bool:
+    widget = str(campo.get("widget", "text")).strip().lower()
+    if widget in {"textarea", "multiselect"}:
+        return True
+    return bool(campo.get("full_width", False))
+
+
+ # Identifica campos dinamicos opcionais com base no rotulo.
+def _campo_area_eh_opcional(campo: dict[str, Any]) -> bool:
+    rotulo = str(campo.get("label", "")).casefold()
+    return "(opcional" in rotulo
+
+
+ # Renderiza uma lista de campos em linhas de duas colunas.
+def _renderizar_campos_area_em_duas_colunas(area_campos: str, campos: list[dict[str, Any]]) -> None:
+    if not campos:
+        return
+
+    for idx in range(0, len(campos), 2):
+        col1, col2 = st.columns(2)
+        with col1:
+            _renderizar_campo_area(area_campos, campos[idx])
+        if idx + 1 < len(campos):
+            with col2:
+                _renderizar_campo_area(area_campos, campos[idx + 1])
+
+
  # Renderiza todos os campos específicos da área jurídica selecionada.
 def _renderizar_bloco_area(area: str) -> None:
     area_campos = _resolver_area_campos(area)
     campos = CAMPOS_POR_AREA.get(area_campos, CAMPOS_POR_AREA["Outro"])
     st.caption(f"Campos especificos para a area selecionada: {area}")
+
+    if _modo_essencial_ativo():
+        campos = [campo for campo in campos if not _campo_area_eh_opcional(campo)]
+        st.caption("Modo Essencial ativo: campos opcionais da area foram ocultados.")
+
+    buffer_duas_colunas: list[dict[str, Any]] = []
     for campo in campos:
-        _renderizar_campo_area(area_campos, campo)
+        if _campo_area_linha_inteira(campo):
+            _renderizar_campos_area_em_duas_colunas(area_campos, buffer_duas_colunas)
+            buffer_duas_colunas = []
+            _renderizar_campo_area(area_campos, campo)
+            continue
+
+        buffer_duas_colunas.append(campo)
+
+    _renderizar_campos_area_em_duas_colunas(area_campos, buffer_duas_colunas)
 
 
  # Coleta apenas os campos específicos da área que foram efetivamente preenchidos.
@@ -706,7 +783,7 @@ def _sugerir_tipo_pessoa(area_direito: str, papel: str) -> str:
 def _renderizar_tipo_pessoa_parte(papel: str, area_direito: str) -> None:
     key = f"{papel}_tipo_pessoa"
     kwargs: dict[str, Any] = {
-        "label": "Tipo de pessoa",
+        "label": "Selecioene o tipo de pessoa",
         "options": TIPOS_PESSOA_OPCOES,
         "key": key,
         "horizontal": True,
@@ -779,6 +856,122 @@ def _formatar_cep_br(valor: str) -> str:
     if len(digitos) <= 5:
         return digitos
     return f"{digitos[:5]}-{digitos[5:8]}"
+
+
+ # Limita texto de referencia para manter o prompt em tamanho controlado.
+def _limitar_texto_modelo_referencia(texto: str, limite: int = LIMITE_CARACTERES_MODELO_REFERENCIA) -> tuple[str, bool]:
+    conteudo = str(texto or "").replace("\r\n", "\n").replace("\r", "\n")
+    conteudo = re.sub(r"\n{3,}", "\n\n", conteudo).strip()
+    if len(conteudo) <= limite:
+        return conteudo, False
+    trecho = conteudo[:limite].rstrip()
+    aviso = "\n...[MODELO TRUNCADO PARA CABER NO PROMPT]..."
+    return f"{trecho}{aviso}", True
+
+
+ # Decodifica arquivo textual usando codificacoes comuns.
+def _decodificar_texto_arquivo(conteudo: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            return conteudo.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("Nao foi possivel ler o arquivo textual. Use .txt/.md em UTF-8.")
+
+
+ # Extrai texto de arquivo DOCX para uso como referencia.
+def _extrair_texto_docx_referencia(conteudo: bytes) -> str:
+    try:
+        from docx import Document
+    except Exception as exc:
+        raise ValueError("Leitura de .docx indisponivel no ambiente.") from exc
+
+    try:
+        documento = Document(io.BytesIO(conteudo))
+    except Exception as exc:
+        raise ValueError("Nao foi possivel ler o arquivo .docx enviado.") from exc
+
+    blocos: list[str] = []
+    for paragrafo in documento.paragraphs:
+        texto = str(paragrafo.text or "").strip()
+        if texto:
+            blocos.append(texto)
+
+    for tabela in documento.tables:
+        for linha in tabela.rows:
+            celulas = [str(celula.text or "").strip() for celula in linha.cells]
+            celulas = [celula for celula in celulas if celula]
+            if celulas:
+                blocos.append(" | ".join(celulas))
+
+    return "\n".join(blocos).strip()
+
+
+ # Extrai texto do arquivo de modelo conforme extensao permitida.
+def _extrair_texto_arquivo_modelo(nome_arquivo: str, conteudo: bytes) -> str:
+    extensao = os.path.splitext(str(nome_arquivo or "").lower())[1]
+    if extensao in {".txt", ".md", ".markdown"}:
+        return _decodificar_texto_arquivo(conteudo)
+    if extensao == ".docx":
+        return _extrair_texto_docx_referencia(conteudo)
+    raise ValueError("Formato nao suportado. Envie .txt, .md ou .docx.")
+
+
+ # Processa o upload do modelo de referencia e persiste texto extraido no estado.
+def _processar_modelo_referencia(uploaded_file: Any) -> None:
+    nome_key = "modelo_referencia_nome"
+    texto_key = "modelo_referencia_texto"
+    trunc_key = "modelo_referencia_truncado"
+    assinatura_key = "_modelo_referencia_assinatura"
+    erro_key = "_modelo_referencia_erro"
+
+    if uploaded_file is None:
+        st.session_state.pop(assinatura_key, None)
+        st.session_state.pop(erro_key, None)
+        st.session_state.pop(nome_key, None)
+        st.session_state.pop(texto_key, None)
+        st.session_state.pop(trunc_key, None)
+        return
+
+    nome_arquivo = str(getattr(uploaded_file, "name", "")).strip()
+    conteudo = bytes(uploaded_file.getvalue() or b"")
+
+    assinatura_raw = f"{nome_arquivo}|{len(conteudo)}".encode("utf-8") + conteudo
+    assinatura = hashlib.sha1(assinatura_raw).hexdigest()
+    if assinatura == st.session_state.get(assinatura_key):
+        return
+
+    try:
+        texto_extraido = _extrair_texto_arquivo_modelo(nome_arquivo, conteudo)
+    except ValueError as exc:
+        st.session_state[erro_key] = str(exc)
+        st.session_state.pop(nome_key, None)
+        st.session_state.pop(texto_key, None)
+        st.session_state.pop(trunc_key, None)
+        st.session_state[assinatura_key] = assinatura
+        return
+    except Exception:
+        st.session_state[erro_key] = "Erro inesperado ao processar o modelo de referencia."
+        st.session_state.pop(nome_key, None)
+        st.session_state.pop(texto_key, None)
+        st.session_state.pop(trunc_key, None)
+        st.session_state[assinatura_key] = assinatura
+        return
+
+    texto_limitado, truncado = _limitar_texto_modelo_referencia(texto_extraido)
+    if not texto_limitado:
+        st.session_state[erro_key] = "Nao foi possivel extrair texto util do arquivo enviado."
+        st.session_state.pop(nome_key, None)
+        st.session_state.pop(texto_key, None)
+        st.session_state.pop(trunc_key, None)
+        st.session_state[assinatura_key] = assinatura
+        return
+
+    st.session_state[nome_key] = nome_arquivo or "[SEM NOME]"
+    st.session_state[texto_key] = texto_limitado
+    st.session_state[trunc_key] = truncado
+    st.session_state.pop(erro_key, None)
+    st.session_state[assinatura_key] = assinatura
 
 
  # Extrai nome de representante legal/sócio principal do retorno da BrasilAPI.
@@ -970,7 +1163,7 @@ def _preencher_parte_com_cnpj(papel: str) -> None:
     if extras and not _texto_campo(f"{prefixo}_qualificacao"):
         st.session_state[f"{prefixo}_qualificacao"] = "; ".join(extras)
 
-    st.session_state[feedback_key] = ("success", "Dados da pessoa jurídica preenchidos via BrasilAPI.")
+    st.session_state[feedback_key] = ("success", "Dados da pessoa jurídica preenchidos.")
 
 
  # Preenche endereço da parte com base no CEP consultado.
@@ -1049,7 +1242,11 @@ def _coletar_payload() -> dict[str, Any]:
     valor_causa_fmt = _formatar_moeda_br(str(st.session_state.get("valor_causa", "")))
 
     pedidos_custom = _linhas_para_lista(st.session_state.get("pedidos_custom_raw", ""))
-    pedidos_base = st.session_state.get("pedidos_base", [])
+    pedidos_base_raw = st.session_state.get("pedidos_base", [])
+    if not isinstance(pedidos_base_raw, list):
+        pedidos_base_raw = []
+    pedidos_base = [str(item).strip() for item in pedidos_base_raw if str(item).strip()]
+    pedidos_base = _incluir_pedidos_dos_parametros_finais(pedidos_base)
     pedidos_lista_final = _mesclar_itens(pedidos_base, pedidos_custom)
 
     fundamentos_legais = _linhas_para_lista(st.session_state.get("fundamentos_legais_raw", ""))
@@ -1074,6 +1271,11 @@ def _coletar_payload() -> dict[str, Any]:
         "nome": st.session_state.get("advogado_nome", ""),
         "oab_uf": str(st.session_state.get("advogado_oab_uf", "")).strip().upper(),
         "oab_num": st.session_state.get("advogado_oab_num", ""),
+    }
+    modelo_referencia = {
+        "nome_arquivo": st.session_state.get("modelo_referencia_nome", ""),
+        "texto": st.session_state.get("modelo_referencia_texto", ""),
+        "conteudo_truncado": bool(st.session_state.get("modelo_referencia_truncado", False)),
     }
 
     dados = {
@@ -1121,6 +1323,7 @@ def _coletar_payload() -> dict[str, Any]:
         },
         "observacoes_estrategicas": st.session_state.get("obs_estrategicas", ""),
         "advogado": advogado,
+        "modelo_referencia": modelo_referencia,
         "autor": autor,
         "reu": reu,
         "tipo_acao": st.session_state.get("tipo_acao", ""),
@@ -1259,6 +1462,15 @@ def _menu_fluxo_lateral() -> tuple[str, int]:
             AREAS_DIREITO,
             key="area_direito",
         )
+        st.radio(
+            "Modo de preenchimento",
+            MODO_PREENCHIMENTO_OPCOES,
+            key="modo_preenchimento",
+            horizontal=True,
+            help="Essencial mostra so os campos principais. Completo exibe todos os opcionais.",
+        )
+        if _modo_essencial_ativo():
+            st.caption("Modo Essencial ativo.")
 
         etapa_idx_atual = _obter_etapa_idx()
         st.markdown("### Fluxo de Preenchimento")
@@ -1790,12 +2002,15 @@ gerar = False
 
 with st.container(border=True):
     st.caption(f"Etapa atual: {etapa_atual}")
+    modo_essencial = _modo_essencial_ativo()
     campos_obrigatorios_etapa = _campos_obrigatorios_da_etapa(etapa_atual)
     if campos_obrigatorios_etapa:
         rotulos = ", ".join(rotulo for _, rotulo in campos_obrigatorios_etapa)
         st.caption(f"Obrigatórios nesta etapa: {rotulos}")
     elif etapa_atual == "Pedidos":
         st.caption("Obrigatório nesta etapa: ao menos um pedido (base ou personalizado).")
+    if modo_essencial:
+        st.caption("Modo Essencial: campos opcionais avançados foram ocultados para reduzir o preenchimento.")
 
     if etapa_atual == "Contexto Processual":
         _titulo_secao("1) Contexto Processual")
@@ -1813,7 +2028,8 @@ with st.container(border=True):
         with ctx3:
             _renderizar_campo_rito(area_selecionada)
         with ctx4:
-            st.text_input("Foro / Vara (opcional)", key="foro_vara", placeholder=foro_placeholder)
+            if not modo_essencial:
+                st.text_input("Foro / Vara (opcional)", key="foro_vara", placeholder=foro_placeholder)
 
         if sugestao_foro:
             st.caption(sugestao_foro)
@@ -1835,17 +2051,21 @@ with st.container(border=True):
             autor_label_doc = "CPF *" if autor_tipo == "Pessoa Física" else "CNPJ *"
             autor_placeholder_nome = "Ex.: Maria da Silva" if autor_tipo == "Pessoa Física" else "Ex.: Empresa XYZ LTDA"
 
-            st.text_input(autor_label_nome, key="autor_nome", placeholder=autor_placeholder_nome)
-            st.text_input(
-                autor_label_doc,
-                key="autor_doc",
-                placeholder="000.000.000-00 ou 00.000.000/0000-00",
-                on_change=_aplicar_mascara_documento,
-                args=("autor_doc",),
-            )
+            autor_id1, autor_id2 = st.columns(2)
+            with autor_id1:
+                st.text_input(autor_label_nome, key="autor_nome", placeholder=autor_placeholder_nome)
+            with autor_id2:
+                st.text_input(
+                    autor_label_doc,
+                    key="autor_doc",
+                    placeholder="000.000.000-00 ou 00.000.000/0000-00",
+                    max_chars=14 if autor_tipo == "Pessoa Física" else 18,
+                    on_change=_aplicar_mascara_documento,
+                    args=("autor_doc",),
+                )
             if autor_tipo == "Pessoa Jurídica":
                 st.button(
-                    "Buscar dados da PJ por CNPJ (BrasilAPI)",
+                    "Buscar dados da PJ por CNPJ",
                     key="btn_buscar_cnpj_autor",
                     on_click=_preencher_parte_com_cnpj,
                     args=("autor",),
@@ -1857,6 +2077,7 @@ with st.container(border=True):
                     "CEP (opcional)",
                     key="autor_cep",
                     placeholder="00000-000",
+                    max_chars=9,
                     on_change=_aplicar_mascara_cep,
                     args=("autor_cep",),
                 )
@@ -1875,46 +2096,47 @@ with st.container(border=True):
                 key="autor_end",
                 placeholder="Rua, número, bairro, cidade/UF",
             )
-            if autor_tipo == "Pessoa Física":
-                aut_pf1, aut_pf2, aut_pf3 = st.columns(3)
-                with aut_pf1:
-                    st.text_input(
-                        "Nacionalidade (opcional)",
-                        key="autor_nacionalidade",
-                        placeholder="Ex.: Brasileira",
-                    )
-                with aut_pf2:
-                    st.text_input(
-                        "Estado civil (opcional)",
-                        key="autor_estado_civil",
-                        placeholder="Ex.: Solteira",
-                    )
-                with aut_pf3:
-                    st.text_input(
-                        "Profissão (opcional)",
-                        key="autor_profissao",
-                        placeholder="Ex.: Professora",
-                    )
-            else:
-                aut_pj1, aut_pj2 = st.columns(2)
-                with aut_pj1:
-                    st.text_input(
-                        "Natureza jurídica (opcional)",
-                        key="autor_natureza_juridica",
-                        placeholder="Ex.: Pessoa jurídica de direito privado",
-                    )
-                with aut_pj2:
-                    st.text_input(
-                        "Representante legal (opcional)",
-                        key="autor_representante_legal",
-                        placeholder="Ex.: João da Silva",
-                    )
-            st.text_area(
-                "Qualificação complementar do autor (opcional)",
-                key="autor_qualificacao",
-                height=90,
-                placeholder="Outras informações úteis de qualificação.",
-            )
+            if not modo_essencial:
+                if autor_tipo == "Pessoa Física":
+                    aut_pf1, aut_pf2, aut_pf3 = st.columns(3)
+                    with aut_pf1:
+                        st.text_input(
+                            "Nacionalidade (opcional)",
+                            key="autor_nacionalidade",
+                            placeholder="Ex.: Brasileira",
+                        )
+                    with aut_pf2:
+                        st.text_input(
+                            "Estado civil (opcional)",
+                            key="autor_estado_civil",
+                            placeholder="Ex.: Solteira",
+                        )
+                    with aut_pf3:
+                        st.text_input(
+                            "Profissão (opcional)",
+                            key="autor_profissao",
+                            placeholder="Ex.: Professora",
+                        )
+                else:
+                    aut_pj1, aut_pj2 = st.columns(2)
+                    with aut_pj1:
+                        st.text_input(
+                            "Natureza jurídica (opcional)",
+                            key="autor_natureza_juridica",
+                            placeholder="Ex.: Pessoa jurídica de direito privado",
+                        )
+                    with aut_pj2:
+                        st.text_input(
+                            "Representante legal (opcional)",
+                            key="autor_representante_legal",
+                            placeholder="Ex.: João da Silva",
+                        )
+                st.text_area(
+                    "Qualificação complementar do autor (opcional)",
+                    key="autor_qualificacao",
+                    height=90,
+                    placeholder="Outras informações úteis de qualificação.",
+                )
 
         with col2:
             st.subheader("Réu")
@@ -1924,17 +2146,21 @@ with st.container(border=True):
             reu_label_doc = "CPF *" if reu_tipo == "Pessoa Física" else "CNPJ *"
             reu_placeholder_nome = "Ex.: João da Silva" if reu_tipo == "Pessoa Física" else "Ex.: INSS / Município de Goiânia / Plano XYZ"
 
-            st.text_input(reu_label_nome, key="reu_nome", placeholder=reu_placeholder_nome)
-            st.text_input(
-                reu_label_doc,
-                key="reu_doc",
-                placeholder="000.000.000-00 ou 00.000.000/0000-00",
-                on_change=_aplicar_mascara_documento,
-                args=("reu_doc",),
-            )
+            reu_id1, reu_id2 = st.columns(2)
+            with reu_id1:
+                st.text_input(reu_label_nome, key="reu_nome", placeholder=reu_placeholder_nome)
+            with reu_id2:
+                st.text_input(
+                    reu_label_doc,
+                    key="reu_doc",
+                    placeholder="000.000.000-00 ou 00.000.000/0000-00",
+                    max_chars=14 if reu_tipo == "Pessoa Física" else 18,
+                    on_change=_aplicar_mascara_documento,
+                    args=("reu_doc",),
+                )
             if reu_tipo == "Pessoa Jurídica":
                 st.button(
-                    "Buscar dados da PJ por CNPJ (BrasilAPI)",
+                    "Buscar dados por CNPJ",
                     key="btn_buscar_cnpj_reu",
                     on_click=_preencher_parte_com_cnpj,
                     args=("reu",),
@@ -1946,6 +2172,7 @@ with st.container(border=True):
                     "CEP do réu (opcional)",
                     key="reu_cep",
                     placeholder="00000-000",
+                    max_chars=9,
                     on_change=_aplicar_mascara_cep,
                     args=("reu_cep",),
                 )
@@ -1964,53 +2191,55 @@ with st.container(border=True):
                 key="reu_end",
                 placeholder="Rua, número, bairro, cidade/UF",
             )
-            if reu_tipo == "Pessoa Física":
-                reu_pf1, reu_pf2, reu_pf3 = st.columns(3)
-                with reu_pf1:
-                    st.text_input(
-                        "Nacionalidade (opcional)",
-                        key="reu_nacionalidade",
-                        placeholder="Ex.: Brasileira",
-                    )
-                with reu_pf2:
-                    st.text_input(
-                        "Estado civil (opcional)",
-                        key="reu_estado_civil",
-                        placeholder="Ex.: Casado",
-                    )
-                with reu_pf3:
-                    st.text_input(
-                        "Profissão (opcional)",
-                        key="reu_profissao",
-                        placeholder="Ex.: Comerciante",
-                    )
-            else:
-                reu_pj1, reu_pj2 = st.columns(2)
-                with reu_pj1:
-                    st.text_input(
-                        "Natureza jurídica (opcional)",
-                        key="reu_natureza_juridica",
-                        placeholder="Ex.: Autarquia federal / Pessoa jurídica de direito privado / Pessoa jurídica de direito público",
-                    )
-                with reu_pj2:
-                    st.text_input(
-                        "Representante legal (opcional)",
-                        key="reu_representante_legal",
-                        placeholder="Ex.: Procuradoria Federal Especializada / Prefeito Municipal / Diretor",
-                    )
-            st.text_area(
-                "Qualificação complementar do réu (opcional)",
-                key="reu_qualificacao",
-                height=90,
-                placeholder="Outras informações úteis de qualificação.",
-            )
+            if not modo_essencial:
+                if reu_tipo == "Pessoa Física":
+                    reu_pf1, reu_pf2, reu_pf3 = st.columns(3)
+                    with reu_pf1:
+                        st.text_input(
+                            "Nacionalidade (opcional)",
+                            key="reu_nacionalidade",
+                            placeholder="Ex.: Brasileira",
+                        )
+                    with reu_pf2:
+                        st.text_input(
+                            "Estado civil (opcional)",
+                            key="reu_estado_civil",
+                            placeholder="Ex.: Casado",
+                        )
+                    with reu_pf3:
+                        st.text_input(
+                            "Profissão (opcional)",
+                            key="reu_profissao",
+                            placeholder="Ex.: Comerciante",
+                        )
+                else:
+                    reu_pj1, reu_pj2 = st.columns(2)
+                    with reu_pj1:
+                        st.text_input(
+                            "Natureza jurídica (opcional)",
+                            key="reu_natureza_juridica",
+                            placeholder="Ex.: Autarquia federal / Pessoa jurídica de direito privado / Pessoa jurídica de direito público",
+                        )
+                    with reu_pj2:
+                        st.text_input(
+                            "Representante legal (opcional)",
+                            key="reu_representante_legal",
+                            placeholder="Ex.: Procuradoria Federal Especializada / Prefeito Municipal / Diretor",
+                        )
+                st.text_area(
+                    "Qualificação complementar do réu (opcional)",
+                    key="reu_qualificacao",
+                    height=90,
+                    placeholder="Outras informações úteis de qualificação.",
+                )
 
-        st.text_area(
-            "Partes adicionais (opcional, uma por linha)",
-            key="partes_adicionais_raw",
-            height=90,
-            placeholder="Ex.: Litisconsorte ativo | Nome | CPF/CNPJ | Endereço",
-        )
+        if not modo_essencial:
+            st.text_area(
+                "Partes adicionais (opcional, uma por linha)",
+                key="partes_adicionais_raw",
+                height=90,
+                placeholder="Ex.: Litisconsorte ativo | Nome | CPF/CNPJ | Endereço",
+            )
 
     elif etapa_atual == "Fatos e Provas":
         _titulo_secao("4) Narrativa Fática")
@@ -2020,25 +2249,26 @@ with st.container(border=True):
             height=180,
             placeholder="Descreva os fatos de forma cronológica e objetiva.",
         )
-        st.text_area(
-            "Cronologia detalhada (opcional, um evento por linha)",
-            key="cronologia_raw",
-            height=100,
-            placeholder="Ex.: 10/01/2026 - Contrato assinado",
-        )
-        provas_sugeridas_area = PROVAS_SUGERIDAS_POR_AREA.get(area_selecionada, PROVAS_SUGERIDAS_POR_AREA["Outro"])
-        st.multiselect(
-            "Provas sugeridas para esta área",
-            provas_sugeridas_area,
-            key="provas_sugeridas",
-            help="Selecione as provas já disponíveis no caso.",
-        )
-        st.text_area(
-            "Documentos e provas adicionais (opcional, um item por linha)",
-            key="provas_raw",
-            height=100,
-            placeholder="Ex.: Contrato, comprovantes de pagamento, trocas de e-mail",
-        )
+        if not modo_essencial:
+            st.text_area(
+                "Cronologia detalhada (opcional, um evento por linha)",
+                key="cronologia_raw",
+                height=100,
+                placeholder="Ex.: 10/01/2026 - Contrato assinado",
+            )
+            provas_sugeridas_area = PROVAS_SUGERIDAS_POR_AREA.get(area_selecionada, PROVAS_SUGERIDAS_POR_AREA["Outro"])
+            st.multiselect(
+                "Provas sugeridas para esta área",
+                provas_sugeridas_area,
+                key="provas_sugeridas",
+                help="Selecione as provas já disponíveis no caso.",
+            )
+            st.text_area(
+                "Documentos e provas adicionais (opcional, um item por linha)",
+                key="provas_raw",
+                height=100,
+                placeholder="Ex.: Contrato, comprovantes de pagamento, trocas de e-mail",
+            )
 
     elif etapa_atual == "Fundamentação":
         _titulo_secao("5) Fundamentação Jurídica")
@@ -2049,36 +2279,42 @@ with st.container(border=True):
             placeholder="Quais pontos jurídicos devem ser defendidos na petição.",
         )
 
-        fun1, fun2 = st.columns(2)
-        with fun1:
-            st.multiselect("Temas jurídicos comuns", TEMAS_JURIDICOS_COMUNS, key="temas_comuns")
-        with fun2:
-            st.text_area(
-                "Fundamentos legais (opcional, um por linha)",
-                key="fundamentos_legais_raw",
-                height=120,
-                placeholder="Ex.: Art. 186 do CC; Art. 6, VIII, do CDC",
-            )
+        if not modo_essencial:
+            fun1, fun2 = st.columns(2)
+            with fun1:
+                st.multiselect("Temas jurídicos comuns", TEMAS_JURIDICOS_COMUNS, key="temas_comuns")
+            with fun2:
+                st.text_area(
+                    "Fundamentos legais (opcional, um por linha)",
+                    key="fundamentos_legais_raw",
+                    height=120,
+                    placeholder="Ex.: Art. 186 do CC; Art. 6, VIII, do CDC",
+                )
 
-        st.text_area(
-            "Temas jurídicos adicionais (opcional, um por linha)",
-            key="temas_custom_raw",
-            height=90,
-            placeholder="Ex.: Teoria do adimplemento substancial",
-        )
+            st.text_area(
+                "Temas jurídicos adicionais (opcional, um por linha)",
+                key="temas_custom_raw",
+                height=90,
+                placeholder="Ex.: Teoria do adimplemento substancial",
+            )
 
     elif etapa_atual == "Pedidos":
         _titulo_secao("6) Pedidos")
-        ped1, ped2 = st.columns(2)
-        with ped1:
-            st.multiselect("Pedidos base", PEDIDOS_BASE, key="pedidos_base")
-        with ped2:
-            st.text_area(
-                "Pedidos personalizados (um por linha)",
-                key="pedidos_custom_raw",
-                height=150,
-                placeholder="Ex.: Condenação ao pagamento de R$ 15.000,00 a título de dano moral",
-            )
+        pedidos_base_exibir = _pedidos_base_exibicao()
+        if modo_essencial:
+            st.multiselect("Pedidos base", pedidos_base_exibir, key="pedidos_base")
+        else:
+            ped1, ped2 = st.columns(2)
+            with ped1:
+                st.multiselect("Pedidos base", pedidos_base_exibir, key="pedidos_base")
+            with ped2:
+                st.text_area(
+                    "Pedidos personalizados (um por linha)",
+                    key="pedidos_custom_raw",
+                    height=150,
+                    placeholder="Ex.: Condenação ao pagamento de R$ 15.000,00 a título de dano moral",
+                )
+        st.caption("Tutela de urgência e justiça gratuita são definidas na etapa final para evitar duplicidade.")
 
     elif etapa_atual == "Finalização e Geração":
         _titulo_secao("7) Estrutura da Peça e Parâmetros Finais")
@@ -2097,12 +2333,13 @@ with st.container(border=True):
                 ],
                 key="secoes_sugeridas",
             )
-            st.text_area(
-                "Seções extras personalizadas (opcional, uma por linha)",
-                key="secoes_extras_raw",
-                height=100,
-                placeholder="Ex.: Da inversão do ônus da prova",
-            )
+            if not modo_essencial:
+                st.text_area(
+                    "Seções extras personalizadas (opcional, uma por linha)",
+                    key="secoes_extras_raw",
+                    height=100,
+                    placeholder="Ex.: Da inversão do ônus da prova",
+                )
 
         with fim2:
             st.text_input(
@@ -2132,12 +2369,40 @@ with st.container(border=True):
                         st.session_state["tem_tutela_urgencia"] = True
                         st.rerun()
 
-        st.text_area(
-            "Observações estratégicas para a redação (opcional)",
-            key="obs_estrategicas",
-            height=100,
-            placeholder="Diretrizes de linguagem, foco, riscos e pontos sensíveis.",
-        )
+        if not modo_essencial:
+            st.text_area(
+                "Observações estratégicas para a redação (opcional)",
+                key="obs_estrategicas",
+                height=100,
+                placeholder="Diretrizes de linguagem, foco, riscos e pontos sensíveis.",
+            )
+
+            st.markdown("#### Modelo de Referência (opcional)")
+            st.caption("Envie um modelo para orientar estilo e estrutura. Formatos: .txt, .md, .docx")
+            arquivo_modelo_referencia = st.file_uploader(
+                "Arquivo do modelo",
+                type=["txt", "md", "docx"],
+                key="modelo_referencia_upload",
+                help="O sistema usa o arquivo apenas como referencia de redacao, sem substituir os dados do caso.",
+            )
+            _processar_modelo_referencia(arquivo_modelo_referencia)
+
+            erro_modelo = str(st.session_state.get("_modelo_referencia_erro", "")).strip()
+            if erro_modelo:
+                st.error(erro_modelo)
+            else:
+                nome_modelo = str(st.session_state.get("modelo_referencia_nome", "")).strip()
+                texto_modelo = str(st.session_state.get("modelo_referencia_texto", "")).strip()
+                truncado_modelo = bool(st.session_state.get("modelo_referencia_truncado", False))
+                if nome_modelo and texto_modelo:
+                    sufixo = " (trecho truncado para caber no prompt)" if truncado_modelo else ""
+                    st.success(f"Modelo carregado: {nome_modelo}{sufixo}")
+                    st.text_area(
+                        "Prévia extraída do modelo",
+                        value=texto_modelo,
+                        height=140,
+                        disabled=True,
+                    )
 
         st.markdown("#### Dados do Advogado (para o fechamento da peça)")
         adv1, adv2, adv3 = st.columns([2, 1, 1])

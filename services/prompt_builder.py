@@ -50,6 +50,7 @@ REGRAS DE ADAPTACAO:
 - Em casos de saude, tratar tutela de urgencia e astreintes apenas quando informadas; sem parametro, usar [PREENCHER].
 - Em casos previdenciarios, nunca inventar DER/DIB/CNIS; se o rito indicar JEF, use linguagem mais objetiva e direta.
 - No FECHAMENTO, usar prioritariamente os dados de `advogado` vindos no JSON.
+- Se houver `modelo_referencia`, usar apenas como referencia de estilo/organizacao; nunca copiar fatos, nomes, pedidos ou dados que conflitem com o JSON.
 """.strip()
 
 
@@ -642,6 +643,35 @@ def _montar_bloco_personalizacao(dados: dict[str, Any], tipo_raw: str, tipo_norm
     return "\n".join(linhas)
 
 
+ # Monta bloco opcional de modelo de referencia anexado pelo usuario.
+def _montar_bloco_modelo_referencia(dados: dict[str, Any]) -> str:
+    modelo = _valor_caminho(dados, "modelo_referencia", default={})
+    if not isinstance(modelo, dict):
+        return "Nenhum modelo de referencia anexado."
+
+    nome_arquivo = _primeiro_texto(
+        modelo.get("nome_arquivo", ""),
+        modelo.get("nome", ""),
+    )
+    texto_modelo = _primeiro_texto(
+        modelo.get("texto", ""),
+        modelo.get("conteudo", ""),
+    )
+    truncado = _to_bool(modelo.get("conteudo_truncado"))
+
+    if not texto_modelo:
+        return "Nenhum modelo de referencia anexado."
+
+    sufixo = " (trecho truncado)" if truncado else ""
+    return "\n".join(
+        [
+            f"- Arquivo anexado: {nome_arquivo or '[PREENCHER]'}",
+            f"- Conteudo de referencia{sufixo}:",
+            texto_modelo,
+        ]
+    )
+
+
  # Constroi o prompt final, combinando regras base, guias e dados do caso.
 def montar_prompt(dados: dict[str, Any]) -> str:
     dados = dados if isinstance(dados, dict) else {}
@@ -671,6 +701,7 @@ def montar_prompt(dados: dict[str, Any]) -> str:
 
     guia = TIPO_ACAO_GUIDE.get(tipo_acao, TIPO_ACAO_GUIDE["Outro"])
     bloco_personalizacao = _montar_bloco_personalizacao(dados, tipo_acao_raw, tipo_acao)
+    bloco_modelo_referencia = _montar_bloco_modelo_referencia(dados)
 
     dados_json = json.dumps(dados, ensure_ascii=False, indent=2)
     return f"""{PROMPT_BASE}
@@ -688,6 +719,14 @@ Tipo: {tipo_acao}
 
 INSTRUCOES DE PERSONALIZACAO DO CASO:
 {bloco_personalizacao}
+
+MODELO DE REFERENCIA (opcional):
+{bloco_modelo_referencia}
+
+REGRAS DE USO DO MODELO DE REFERENCIA:
+- Use o modelo apenas para estilo, organizacao e tom de redacao.
+- Em conflito entre modelo e JSON do caso, prevalece o JSON.
+- Nunca copiar fatos, dados sensiveis, pedidos ou qualificacoes do modelo para este caso sem suporte no JSON.
 
 DADOS DO CASO (JSON):
 {dados_json}
